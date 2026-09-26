@@ -27,9 +27,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Fail on known-leaked placeholders
+      - name: Fail on known-leaked secrets
+        # NOTE: the patterns below live in this file, so exclude it from its
+        # own scan — otherwise grep always matches itself.
         run: |
-          ! git grep -n "AIzaSyATgIePHiOXnqlzUN4rRyyaPw4CTWH7yWA" -- . || exit 1
-          ! git grep -n "Rrt9iMYACnqGK" -- . || exit 1
-          ! git grep -n "MYAPP_RELEASE_STORE_PASSWORD=vucms" -- . || exit 1
+          if git grep -n "AIzaSyATgIePHiOXnqlzUN4rRyyaPw4CTWH7yWA" -- . ':!.github/workflows/ci.yml'; then
+            echo "LEAKED Firebase key found"; exit 1
+          fi
+          if git grep -n "Rrt9iMYACnqGK" -- . ':!.github/workflows/ci.yml'; then
+            echo "LEAKED Mapbox token found"; exit 1
+          fi
+          if git grep -n "MYAPP_RELEASE_STORE_PASSWORD=vucms" -- . ':!.github/workflows/ci.yml'; then
+            echo "LEAKED keystore password found"; exit 1
+          fi
           echo "No known secrets found."
