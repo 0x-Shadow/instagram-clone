@@ -1,0 +1,87 @@
+{
+  "expo": {
+    "name": "expo-app",
+    "slug": "expo-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Instagram needs your camera so you can take photos and videos to share.",
+        "NSPhotoLibraryUsageDescription": "Instagram needs your photo library so you can share photos and videos.",
+        "NSPhotoLibraryAddUsageDescription": "Instagram needs permission to save photos and videos to your library.",
+        "NSMicrophoneUsageDescription": "Instagram needs your microphone so you can record videos with sound.",
+        "NSLocationWhenInUseUsageDescription": "Instagram needs your location so you can tag places in your posts.",
+        "NSContactsUsageDescription": "Instagram needs your contacts so you can find friends to follow."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "READ_CONTACTS",
+        "POST_NOTIFICATIONS",
+        "RECEIVE_BOOT_COMPLETED",
+        "VIBRATE"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-image",
+      "expo-font",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Instagram needs your photo library so you can share photos and videos.",
+          "cameraPermission": "Instagram needs your camera so you can take photos and videos to share.",
+          "microphonePermission": "Instagram needs your microphone so you can record videos with sound."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Instagram needs your photo library so you can share photos and videos.",
+          "savePhotosPermission": "Instagram needs permission to save photos and videos to your library.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Instagram needs your location so you can tag places in your posts."
+        }
+      ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Instagram needs your contacts so you can find friends to follow."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Instagram needs your camera so you can take photos and videos to share.",
+          "microphonePermission": "Instagram needs your microphone so you can record videos with sound.",
+          "recordAudioAndroid": true
+        }
+      ]
+    ]
+  }
+}
