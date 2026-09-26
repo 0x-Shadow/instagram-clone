@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "expo-app",
+    "name": "Circles",
     "slug": "expo-app",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -9,12 +9,12 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSCameraUsageDescription": "Instagram needs your camera so you can take photos and videos to share.",
-        "NSPhotoLibraryUsageDescription": "Instagram needs your photo library so you can share photos and videos.",
-        "NSPhotoLibraryAddUsageDescription": "Instagram needs permission to save photos and videos to your library.",
-        "NSMicrophoneUsageDescription": "Instagram needs your microphone so you can record videos with sound.",
-        "NSLocationWhenInUseUsageDescription": "Instagram needs your location so you can tag places in your posts.",
-        "NSContactsUsageDescription": "Instagram needs your contacts so you can find friends to follow."
+        "NSCameraUsageDescription": "Circles needs your camera so you can take photos and videos to share.",
+        "NSPhotoLibraryUsageDescription": "Circles needs your photo library so you can share photos and videos.",
+        "NSPhotoLibraryAddUsageDescription": "Circles needs permission to save photos and videos to your library.",
+        "NSMicrophoneUsageDescription": "Circles needs your microphone so you can record videos with sound.",
+        "NSLocationWhenInUseUsageDescription": "Circles needs your location so you can tag places in your posts.",
+        "NSContactsUsageDescription": "Circles needs your contacts so you can find friends to follow."
       }
     },
     "android": {
@@ -49,36 +49,36 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Instagram needs your photo library so you can share photos and videos.",
-          "cameraPermission": "Instagram needs your camera so you can take photos and videos to share.",
-          "microphonePermission": "Instagram needs your microphone so you can record videos with sound."
+          "photosPermission": "Circles needs your photo library so you can share photos and videos.",
+          "cameraPermission": "Circles needs your camera so you can take photos and videos to share.",
+          "microphonePermission": "Circles needs your microphone so you can record videos with sound."
         }
       ],
       [
         "expo-media-library",
         {
-          "photosPermission": "Instagram needs your photo library so you can share photos and videos.",
-          "savePhotosPermission": "Instagram needs permission to save photos and videos to your library.",
+          "photosPermission": "Circles needs your photo library so you can share photos and videos.",
+          "savePhotosPermission": "Circles needs permission to save photos and videos to your library.",
           "isAccessMediaLocationEnabled": true
         }
       ],
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Instagram needs your location so you can tag places in your posts."
+          "locationWhenInUsePermission": "Circles needs your location so you can tag places in your posts."
         }
       ],
       [
         "expo-contacts",
         {
-          "contactsPermission": "Instagram needs your contacts so you can find friends to follow."
+          "contactsPermission": "Circles needs your contacts so you can find friends to follow."
         }
       ],
       [
         "expo-camera",
         {
-          "cameraPermission": "Instagram needs your camera so you can take photos and videos to share.",
-          "microphonePermission": "Instagram needs your microphone so you can record videos with sound.",
+          "cameraPermission": "Circles needs your camera so you can take photos and videos to share.",
+          "microphonePermission": "Circles needs your microphone so you can record videos with sound.",
           "recordAudioAndroid": true
         }
       ]

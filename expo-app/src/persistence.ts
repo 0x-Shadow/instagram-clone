@@ -1,8 +1,9 @@
 import type { Message, Post, StoryGroup, User } from './social';
 import type { SettingsState } from './settings';
+import type { Circle } from './circles';
 
-export const STORAGE_KEY = '@instagram-clone/v1';
-export const STORAGE_VERSION = 1;
+export const STORAGE_KEY = '@circles/v1';
+export const STORAGE_VERSION = 2;
 
 export type KeyValueStorage = {
   getItem(key: string): Promise<string | null>;
@@ -23,6 +24,8 @@ export type PersistedState = {
   readThreads: string[];
   seenActivityAt: number;
   searchHistory: string[];
+  circles?: Circle[];
+  activeCircleId?: string | null;
 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -32,7 +35,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 function isPersistedState(v: unknown): v is PersistedState {
   if (!isRecord(v)) return false;
   if (
-    v.version !== STORAGE_VERSION ||
+    (v.version !== STORAGE_VERSION && v.version !== 1) ||
     !Array.isArray(v.users) ||
     !Array.isArray(v.posts) ||
     !Array.isArray(v.stories) ||
@@ -58,7 +61,15 @@ function isPersistedState(v: unknown): v is PersistedState {
     'highlights',
     'followRequests',
   ];
-  return listKeys.every((k) => Array.isArray(s[k]));
+  if (!listKeys.every((k) => Array.isArray(s[k]))) return false;
+  if (v.circles !== undefined && !Array.isArray(v.circles)) return false;
+  if (
+    v.activeCircleId !== undefined &&
+    v.activeCircleId !== null &&
+    typeof v.activeCircleId !== 'string'
+  )
+    return false;
+  return true;
 }
 
 export function createPersistence(storage: KeyValueStorage) {

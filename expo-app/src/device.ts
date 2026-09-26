@@ -176,7 +176,7 @@ export async function sendTestNotification(): Promise<boolean> {
     if (!ok) return false;
     const N = await notifs();
     await N.scheduleNotificationAsync({
-      content: { title: 'Instagram', body: 'Notifications are on. You will get likes and messages here.' },
+      content: { title: 'Circles', body: 'Notifications are on. You will get likes and messages here.' },
       trigger: { type: N.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: 2 },
     });
     return true;

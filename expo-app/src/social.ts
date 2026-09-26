@@ -52,7 +52,7 @@ const PHOTO = (seed: string, w = 600, h = 600) =>
   `https://picsum.photos/seed/${seed}/${w}/${h}`;
 
 export const SEED_USERS: User[] = [
-  { username: 'vucms', name: 'Vu CMS', avatar: AVATAR(5), bio: 'React Native dev. Rebuilding IG offline-first.' },
+  { username: 'vucms', name: 'Vu CMS', avatar: AVATAR(5), bio: 'Sharing small moments with my circles. Offline-first.' },
   { username: 'ana', name: 'Ana', avatar: AVATAR(6), bio: 'Travel + film photography' },
   { username: 'leo', name: 'Leo', avatar: AVATAR(7), bio: 'Coffee first, code later' },
   { username: 'mia', name: 'Mia', avatar: AVATAR(8), bio: 'Design systems nerd' },
@@ -71,7 +71,7 @@ export const SEED_POSTS: Post[] = Array.from({ length: 12 }, (_, i) => {
     id: `p${i}`,
     username: user.username,
     image: PHOTO(`ig${i}`),
-    caption: `Post ${i} from ${user.username} — hello from the Expo rebuild${tags}`,
+    caption: `Circle moment ${i} from ${user.username} — small group, no algorithm${tags}`,
     likes: i % 2 === 0 ? ['ana', 'leo'].slice(0, (i % 2) + 1) : ['mia'],
     comments: [
       {

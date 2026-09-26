@@ -46,7 +46,7 @@ async function main() {
   assert('exports createPersistence + STORAGE_KEY', typeof createPersistence === 'function' && typeof STORAGE_KEY === 'string');
 
   const sample = {
-    version: 1,
+    version: 2,
     users: [{ username: 'vucms', name: 'Vu', avatar: 'a', bio: 'b' }],
     posts: [{ id: 'p1', username: 'vucms', image: 'i', caption: 'c', likes: ['ana'], comments: [], createdAt: 1 }],
     stories: [{ username: 'ana', images: ['s'], seen: false }],
@@ -92,6 +92,34 @@ async function main() {
 
   await p.clear();
   assert('clear removes stored state', (await p.load()) === null);
+
+  console.log('circles + migration:');
+  const circlesMod = loadTs('src/circles.ts');
+  assert('circles exports helpers', typeof circlesMod.feedForCircle === 'function' && Array.isArray(circlesMod.DEFAULT_CIRCLES));
+  const testPosts = [
+    { username: 'vucms' },
+    { username: 'kai' },
+    { username: 'zoe' },
+  ];
+  const family = { id: 'family', name: 'Family', members: ['vucms', 'ana'] };
+  assert('feedForCircle(null) returns all', circlesMod.feedForCircle(testPosts, null).length === 3);
+  assert('feedForCircle filters members', circlesMod.feedForCircle(testPosts, family).length === 1);
+  assert('circlesForUser finds membership', circlesMod.circlesForUser(circlesMod.DEFAULT_CIRCLES, 'vucms').length >= 2);
+  assert('circleById(null) is null', circlesMod.circleById(circlesMod.DEFAULT_CIRCLES, null) === null);
+
+  const v1sample = { ...sample, version: 1 };
+  const v1store = memStorage();
+  const pv1 = createPersistence(v1store);
+  await pv1.save(v1sample);
+  const v1back = await pv1.load();
+  assert('v1 state migrates (loads, saves as v2)', v1back !== null && v1back.users[0].username === 'vucms');
+
+  const withCircles = { ...sample, circles: circlesMod.DEFAULT_CIRCLES, activeCircleId: 'family' };
+  const cstore = memStorage();
+  const pc = createPersistence(cstore);
+  await pc.save(withCircles);
+  const cback = await pc.load();
+  assert('circles round-trip', cback !== null && Array.isArray(cback.circles) && cback.activeCircleId === 'family');
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

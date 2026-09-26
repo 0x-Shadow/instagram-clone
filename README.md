@@ -45,7 +45,7 @@ Checks (also run in CI):
 
 ```bash
 cd expo-app
-node scripts/check.mjs   # persistence harness — 8/8 expected
+node scripts/check.mjs   # persistence + circles harness — 15/15 expected
 npx tsc --noEmit         # must be clean
 ```
 
