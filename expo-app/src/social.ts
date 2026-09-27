@@ -12,6 +12,21 @@ export type Comment = {
   createdAt: number;
 };
 
+export type MediaKind = 'image' | 'video';
+
+export type StoryMedia = {
+  uri: string;
+  kind: MediaKind;
+  tone?: string;
+};
+
+export type ProductTag = {
+  x: number;
+  y: number;
+  label: string;
+  price: string;
+};
+
 export type Post = {
   id: string;
   username: string;
@@ -20,13 +35,52 @@ export type Post = {
   likes: string[];
   comments: Comment[];
   createdAt: number;
+  kind?: MediaKind;
+  tone?: string;
+  sponsored?: boolean;
+  productTags?: ProductTag[];
 };
 
 export type StoryGroup = {
   username: string;
   images: string[];
   seen: boolean;
+  media?: StoryMedia[];
 };
+
+/* Cross-platform tone presets. Applied as translucent overlays (no native
+   GPU filters needed) so they render identically on iOS, Android and web. */
+export const POST_TONES: Record<string, { label: string; overlay: string }> = {
+  normal: { label: 'Normal', overlay: 'transparent' },
+  warm: { label: 'Warm', overlay: 'rgba(255,150,50,0.18)' },
+  cool: { label: 'Cool', overlay: 'rgba(80,140,255,0.16)' },
+  fade: { label: 'Fade', overlay: 'rgba(255,255,255,0.28)' },
+  golden: { label: 'Golden', overlay: 'rgba(255,190,60,0.25)' },
+  rose: { label: 'Rosé', overlay: 'rgba(255,90,140,0.16)' },
+  noir: { label: 'Noir', overlay: 'rgba(10,10,15,0.38)' },
+};
+
+export function toneOverlay(tone?: string): string {
+  if (!tone) return 'transparent';
+  return POST_TONES[tone]?.overlay ?? 'transparent';
+}
+
+/* Migrate legacy story groups ({ images }) to the media shape. Old saves
+   keep working: missing media is derived from images. */
+export function normalizeStories(groups: StoryGroup[]): StoryGroup[] {
+  return groups.map((g) => {
+    if (Array.isArray(g.media) && g.media.length > 0) return g;
+    return {
+      ...g,
+      media: (Array.isArray(g.images) ? g.images : []).map((uri) => ({ uri, kind: 'image' as MediaKind })),
+    };
+  });
+}
+
+export function storyMedia(g: { images?: string[]; media?: StoryMedia[] }): StoryMedia[] {
+  if (Array.isArray(g.media) && g.media.length > 0) return g.media;
+  return (Array.isArray(g.images) ? g.images : []).map((uri) => ({ uri, kind: 'image' as MediaKind }));
+}
 
 export type Message = {
   id: string;
@@ -64,26 +118,42 @@ export const SEED_USERS: User[] = [
 
 const now = Date.now();
 
-export const SEED_POSTS: Post[] = Array.from({ length: 12 }, (_, i) => {
-  const user = SEED_USERS[i % SEED_USERS.length];
-  const tags = i % 3 === 0 ? ' #travel' : i % 3 === 1 ? ' #daily' : ' #photo';
-  return {
-    id: `p${i}`,
-    username: user.username,
-    image: PHOTO(`ig${i}`),
-    caption: `Circle moment ${i} from ${user.username} — small group, no algorithm${tags}`,
-    likes: i % 2 === 0 ? ['ana', 'leo'].slice(0, (i % 2) + 1) : ['mia'],
-    comments: [
-      {
-        id: `p${i}-c0`,
-        username: SEED_USERS[(i + 2) % SEED_USERS.length].username,
-        text: i % 2 === 0 ? 'Love this!' : 'Great shot',
-        createdAt: now - i * 3_600_000 - 600_000,
-      },
+export const SEED_POSTS: Post[] = [
+  ...Array.from({ length: 12 }, (_, i) => {
+    const user = SEED_USERS[i % SEED_USERS.length];
+    const tags = i % 3 === 0 ? ' #travel' : i % 3 === 1 ? ' #daily' : ' #photo';
+    return {
+      id: `p${i}`,
+      username: user.username,
+      image: PHOTO(`ig${i}`),
+      caption: `Circle moment ${i} from ${user.username} — small group, no algorithm${tags}`,
+      likes: i % 2 === 0 ? ['ana', 'leo'].slice(0, (i % 2) + 1) : ['mia'],
+      comments: [
+        {
+          id: `p${i}-c0`,
+          username: SEED_USERS[(i + 2) % SEED_USERS.length].username,
+          text: i % 2 === 0 ? 'Love this!' : 'Great shot',
+          createdAt: now - i * 3_600_000 - 600_000,
+        },
+      ],
+      createdAt: now - i * 3_600_000,
+    };
+  }),
+  {
+    id: 'p-sponsored',
+    username: 'mia',
+    image: PHOTO('igsponsor'),
+    caption: 'Studio presets I actually use — warm light, zero edits #photo',
+    likes: ['ana', 'leo', 'max'],
+    comments: [],
+    createdAt: now - 900_000,
+    sponsored: true,
+    productTags: [
+      { x: 30, y: 35, label: 'Preset pack', price: '$12' },
+      { x: 68, y: 60, label: 'Field notebook', price: '$9' },
     ],
-    createdAt: now - i * 3_600_000,
-  };
-});
+  },
+];
 
 export const SEED_STORIES: StoryGroup[] = SEED_USERS.slice(0, 6).map((u, gi) => ({
   username: u.username,

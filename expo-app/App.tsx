@@ -17,6 +17,7 @@ import {
 } from 'react-native';
 import { Image } from 'expo-image';
 import { BlurView } from 'expo-blur';
+import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -30,6 +31,8 @@ import {
   locationStatus,
   notificationsStatus,
   pickFromLibrary,
+  pickManyFromLibrary,
+  pickVideoFromLibrary,
   saveToLibrary,
   sendTestNotification,
   takePhoto,
@@ -37,12 +40,15 @@ import {
   pushNeedsDevBuild,
   type DeviceContact,
 } from './src/device';
+import { VideoView, useVideoPlayer } from 'expo-video';
+import { manipulateAsync, FlipType, SaveFormat } from 'expo-image-manipulator';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { STORAGE_VERSION, createPersistence } from './src/persistence';
 import { DEFAULT_CIRCLES, circleById, circlesForUser, feedForCircle } from './src/circles';
 import { success, tap } from './src/haptics';
 import {
   ME,
+  POST_TONES,
   SEED_MESSAGES,
   SEED_POSTS,
   SEED_STORIES,
@@ -51,10 +57,13 @@ import {
   conversationWith,
   extractHashtags,
   inboxThreads,
+  normalizeStories,
   searchPosts,
   searchUsers,
+  storyMedia,
   timeAgo,
   toggleInList,
+  toneOverlay,
   type Message,
   type Post,
   type StoryGroup,
@@ -72,6 +81,8 @@ import { DarkTheme, LightTheme, ThemeRef, applyTheme, type Theme } from './src/t
 const ICON_SIZE = 26;
 const REEL_HEIGHT = Math.round(Dimensions.get('window').height);
 
+const STORY_GRADIENT = ['#FEDA75', '#FA7E1E', '#D62976', '#962FBF', '#4F5BD5'] as const;
+
 function Avatar({
   uri,
   size = 32,
@@ -81,8 +92,32 @@ function Avatar({
   size?: number;
   ring?: boolean | 'close' | 'seen';
 }) {
-  const borderColor = ring === 'close' ? '#34c759' : ring === 'seen' ? '#d9d9d9' : '#d62976';
   const outer = size + 10;
+  if (ring === true) {
+    return (
+      <LinearGradient
+        colors={[...STORY_GRADIENT]}
+        start={{ x: 0, y: 1 }}
+        end={{ x: 1, y: 0 }}
+        style={{
+          width: outer,
+          height: outer,
+          borderRadius: outer / 2,
+          padding: 3,
+        }}>
+        <View
+          style={{
+            flex: 1,
+            borderRadius: (size + 4) / 2,
+            padding: 2.5,
+            backgroundColor: '#000',
+          }}>
+          <Image source={{ uri }} style={{ width: size, height: size, borderRadius: size / 2 }} />
+        </View>
+      </LinearGradient>
+    );
+  }
+  const borderColor = ring === 'close' ? '#34c759' : ring === 'seen' ? '#d9d9d9' : 'transparent';
   return (
     <View
       style={{
@@ -107,6 +142,15 @@ function Avatar({
 
 function userByName(users: User[], username: string): User {
   return users.find((u) => u.username === username) ?? users[0];
+}
+
+function viewsForPost(id: string): string {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 100000;
+  const v = 1200 + h * 37;
+  if (v >= 1000000) return `${(v / 1000000).toFixed(1)}M`;
+  if (v >= 1000) return `${(v / 1000).toFixed(1)}K`;
+  return `${v}`;
 }
 
 function ToggleRow({ label, hint, value, onToggle }: { label: string; hint?: string; value: boolean; onToggle: () => void }) {
@@ -137,12 +181,43 @@ function MenuRow({ icon, title, onPress }: { icon: string; title: string; onPres
   );
 }
 
+function AutoVideo({ uri, style }: { uri: string; style?: object }) {
+  const player = useVideoPlayer(uri, (p) => {
+    p.loop = true;
+    p.muted = true;
+    p.play();
+  });
+  return (
+    <VideoView
+      player={player}
+      style={style as never}
+      contentFit="cover"
+      nativeControls={false}
+    />
+  );
+}
+
 function FadeIn({ children }: { children: React.ReactNode }) {
   const v = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     Animated.timing(v, { toValue: 1, duration: 220, useNativeDriver: true }).start();
   }, [v]);
   return <Animated.View style={{ opacity: v, flex: 1 }}>{children}</Animated.View>;
+}
+
+function Shimmer({ children }: { children: React.ReactNode }) {
+  const v = useRef(new Animated.Value(0.35)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(v, { toValue: 1, duration: 900, useNativeDriver: true }),
+        Animated.timing(v, { toValue: 0.35, duration: 900, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [v]);
+  return <Animated.View style={{ opacity: v }}>{children}</Animated.View>;
 }
 
 function BootSkeleton() {
@@ -219,13 +294,19 @@ function PermRow({ label, hint, granted, onRequest }: { label: string; hint: str
 }
 
 const SONGS = [
-  { title: 'Espresso', artist: 'Sabrina Carpenter' },
-  { title: 'Birds of a Feather', artist: 'Billie Eilish' },
-  { title: 'Blinding Lights', artist: 'The Weeknd' },
-  { title: 'Levitating', artist: 'Dua Lipa' },
-  { title: 'As It Was', artist: 'Harry Styles' },
-  { title: 'Stay', artist: 'The Kid LAROI' },
+  { title: 'Espresso', artist: 'Sabrina Carpenter', dur: '2:55' },
+  { title: 'Birds of a Feather', artist: 'Billie Eilish', dur: '3:30' },
+  { title: 'Blinding Lights', artist: 'The Weeknd', dur: '3:20' },
+  { title: 'Levitating', artist: 'Dua Lipa', dur: '3:23' },
+  { title: 'As It Was', artist: 'Harry Styles', dur: '2:47' },
+  { title: 'Stay', artist: 'The Kid LAROI', dur: '2:21' },
+  { title: 'Më E Mira', artist: 'Romeo Veshaj, Ermal Fejzullahu', dur: '2:35' },
+  { title: 'YAMA', artist: 'DYSTINCT', dur: '2:39' },
+  { title: 'Zemren', artist: 'Kida', dur: '2:16' },
+  { title: 'MOLIS GNORISTIKAME', artist: 'Kidd, BLVD', dur: '2:26' },
 ];
+
+const SONG_HUES = [348, 265, 210, 160, 25, 200, 320, 45, 140, 280];
 
 const CREATE_SEEDS = ['create1', 'create2', 'create3', 'create4', 'create5', 'create6'];
 const createPhoto = (seed: string) => `https://picsum.photos/seed/${seed}/600/600`;
@@ -248,7 +329,7 @@ export default function App() {
 
   const [query, setQuery] = useState('');
   const [profileName, setProfileName] = useState<string | null>(null);
-  const [profileMode, setProfileMode] = useState<'posts' | 'saved' | 'archive'>('posts');
+  const [profileMode, setProfileMode] = useState<'posts' | 'reels' | 'saved' | 'tagged'>('posts');
   const [storyIndex, setStoryIndex] = useState<number | null>(null);
   const [storyPage, setStoryPage] = useState(0);
   const [commentsPostId, setCommentsPostId] = useState<string | null>(null);
@@ -257,6 +338,9 @@ export default function App() {
   const [draftMessage, setDraftMessage] = useState('');
   const [createCaption, setCreateCaption] = useState('');
   const [createSeed, setCreateSeed] = useState(CREATE_SEEDS[0]);
+  const [pickedKind, setPickedKind] = useState<'image' | 'video'>('image');
+  const [createTone, setCreateTone] = useState('normal');
+  const [editBusy, setEditBusy] = useState(false);
   const [editingBio, setEditingBio] = useState(false);
   const [bioDraft, setBioDraft] = useState('');
   const [settings, setSettings] = useState<SettingsState>(DEFAULT_SETTINGS);
@@ -266,6 +350,7 @@ export default function App() {
   const [composerOpen, setComposerOpen] = useState(false);
   const [storySeed, setStorySeed] = useState('mystory1');
   const [optionsPostId, setOptionsPostId] = useState<string | null>(null);
+  const [shopTag, setShopTag] = useState<string | null>(null);
   const [collectPostId, setCollectPostId] = useState<string | null>(null);
   const [newCollection, setNewCollection] = useState('');
   const [tagView, setTagView] = useState<string | null>(null);
@@ -290,6 +375,8 @@ export default function App() {
   const [circles, setCircles] = useState(DEFAULT_CIRCLES);
   const [activeCircleId, setActiveCircleId] = useState<string | null>(null);
   const [reelH, setReelH] = useState(REEL_HEIGHT);
+  const [reelsFriendsOnly, setReelsFriendsOnly] = useState(false);
+  const [reelGifts, setReelGifts] = useState<Record<string, number>>({});
   const [circleMenuOpen, setCircleMenuOpen] = useState(false);
   const circleMenuAnim = useRef(new Animated.Value(0)).current;
 
@@ -339,6 +426,8 @@ export default function App() {
   const [extraPerms, setExtraPerms] = useState({ location: 'undetermined', contacts: 'undetermined', notifications: 'undetermined' });
   const [pickedUri, setPickedUri] = useState<string | null>(null);
   const [storyUri, setStoryUri] = useState<string | null>(null);
+  const [storyKind, setStoryKind] = useState<'image' | 'video'>('image');
+  const [storyTone, setStoryTone] = useState('normal');
   const [placeTag, setPlaceTag] = useState<string | null>(null);
   const [placeBusy, setPlaceBusy] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
@@ -354,6 +443,16 @@ export default function App() {
   const [noteEditing, setNoteEditing] = useState(false);
   const [noteSongs, setNoteSongs] = useState<Record<string, string>>({});
   const [noteModal, setNoteModal] = useState<string | null>(null);
+  const [noteHint, setNoteHint] = useState('');
+  const [audioOpen, setAudioOpen] = useState(false);
+  const [audioQuery, setAudioQuery] = useState('');
+  const [audioTab, setAudioTab] = useState<'foryou' | 'trending' | 'saved'>('foryou');
+  const [savedSongs, setSavedSongs] = useState<Set<string>>(new Set());
+
+  const flashNoteHint = useCallback((msg: string) => {
+    setNoteHint(msg);
+    setTimeout(() => setNoteHint(''), 2200);
+  }, []);
   const noteModalAnim = useRef(new Animated.Value(0)).current;
 
   const openNote = useCallback(
@@ -397,6 +496,8 @@ export default function App() {
     closeNote();
   }, [noteDraft, closeNote]);
   const [dmFilter, setDmFilter] = useState<'all' | 'unread'>('all');
+  const [dmTab, setDmTab] = useState<'messages' | 'requests'>('messages');
+  const [exploreCols, setExploreCols] = useState<2 | 3>(3);
   const [followList, setFollowList] = useState<{ title: string; users: string[] } | null>(null);
   const cameraRef = useRef<CameraView>(null);
   const reelsRef = useRef<FlatList<Post>>(null);
@@ -444,7 +545,7 @@ export default function App() {
       if (saved && saved.users.some((u) => u.username === ME)) {
         setUsers(saved.users);
         setPosts(saved.posts);
-        setStories(saved.stories);
+        setStories(normalizeStories(saved.stories));
         setMessages(saved.messages);
         setFollows(saved.follows);
         setBookmarks(new Set(saved.bookmarks));
@@ -517,9 +618,11 @@ export default function App() {
         tap();
         if (cameraOpen === 'story') {
           setStoryUri(photo.uri);
+          setStoryKind('image');
           setComposerOpen(true);
         } else {
           setPickedUri(photo.uri);
+          setPickedKind('image');
           setCreateOpen(true);
         }
         setCameraOpen(null);
@@ -605,6 +708,10 @@ export default function App() {
     [users, query, settings.blocked],
   );
   const filteredPosts = useMemo(() => searchPosts(visiblePosts, query), [visiblePosts, query]);
+  const reelsPosts = useMemo(
+    () => (reelsFriendsOnly ? filteredPosts.filter((p) => myFollowing.includes(p.username)) : filteredPosts),
+    [filteredPosts, reelsFriendsOnly, myFollowing],
+  );
   const commentsPost = posts.find((p) => p.id === commentsPostId) ?? null;
   const chatMessages = useMemo(
     () => (activeChat ? conversationWith(messages, ME, activeChat) : []),
@@ -625,7 +732,7 @@ export default function App() {
 
   useEffect(() => {
     if (tab === 'reels') {
-      const safeIndex = Math.max(0, Math.min(reelIndex, Math.max(filteredPosts.length - 1, 0)));
+      const safeIndex = Math.max(0, Math.min(reelIndex, Math.max(reelsPosts.length - 1, 0)));
       const t = setTimeout(() => {
         try {
           reelsRef.current?.scrollToIndex({ index: safeIndex, animated: false });
@@ -636,7 +743,7 @@ export default function App() {
       return () => clearTimeout(t);
     }
     return undefined;
-  }, [tab, reelIndex, filteredPosts.length]);
+  }, [tab, reelIndex, reelsPosts.length]);
 
   const toggleLike = useCallback(
     (id: string) => {
@@ -719,6 +826,7 @@ export default function App() {
     success();
     const base = createCaption.trim();
     const caption = placeTag ? `${base} — at ${placeTag}` : base;
+    const kind = pickedUri ? pickedKind : 'image';
     setPosts((prev) => [
       {
         id,
@@ -728,16 +836,20 @@ export default function App() {
         likes: [],
         comments: [],
         createdAt: Date.now(),
+        kind,
+        tone: createTone === 'normal' ? undefined : createTone,
       },
       ...prev,
     ]);
     setCreateCaption('');
     setPickedUri(null);
+    setPickedKind('image');
+    setCreateTone('normal');
     setPlaceTag(null);
     setSaveMsg('');
     setCreateOpen(false);
-    setTab('home');
-  }, [createCaption, createSeed, pickedUri, placeTag]);
+    setTab(kind === 'video' ? 'reels' : 'home');
+  }, [createCaption, createSeed, pickedUri, pickedKind, createTone, placeTag]);
 
   const saveBio = useCallback(() => {
     const bio = bioDraft.trim();
@@ -811,21 +923,36 @@ export default function App() {
     }));
   }, []);
 
-  const addStory = useCallback(() => {
+  const pushStoryMedia = useCallback((items: { uri: string; kind: 'image' | 'video'; tone?: string }[]) => {
+    if (items.length === 0) return;
     success();
-    const uri = storyUri ?? `https://picsum.photos/seed/${storySeed}/540/960`;
     setStories((prev) => {
       const mine = prev.find((s) => s.username === ME);
       if (mine) {
+        const mineMedia = storyMedia(mine);
         return prev.map((s) =>
-          s.username === ME ? { ...s, images: [uri, ...s.images], seen: false } : s,
+          s.username === ME
+            ? { ...s, images: [...items.map((i) => i.uri), ...s.images], media: [...items, ...mineMedia], seen: false }
+            : s,
         );
       }
-      return [{ username: ME, images: [uri], seen: false }, ...prev];
+      return [
+        { username: ME, images: items.map((i) => i.uri), media: items, seen: false },
+        ...prev,
+      ];
     });
+  }, []);
+
+  const addStory = useCallback(() => {
+    const uri = storyUri ?? `https://picsum.photos/seed/${storySeed}/540/960`;
+    pushStoryMedia([
+      { uri, kind: storyUri ? storyKind : 'image', tone: storyTone === 'normal' ? undefined : storyTone },
+    ]);
     setStoryUri(null);
+    setStoryKind('image');
+    setStoryTone('normal');
     setComposerOpen(false);
-  }, [storySeed, storyUri]);
+  }, [storySeed, storyUri, storyKind, storyTone, pushStoryMedia]);
 
   const addHighlight = useCallback(() => {
     const name = highlightName.trim();
@@ -896,8 +1023,8 @@ export default function App() {
             <View style={{ flex: 1 }}>
               <Text style={styles.postUser}>{item.username}</Text>
               <Text style={styles.postMeta} numberOfLines={1}>
-                {authorCircle ? `${authorCircle.name} · ` : ''}
-                {timeAgo(item.createdAt)}
+                {item.sponsored ? 'Sponsored' : authorCircle ? `${authorCircle.name} · ` : ''}
+                {!item.sponsored ? timeAgo(item.createdAt) : ''}
               </Text>
             </View>
           </Pressable>
@@ -906,13 +1033,48 @@ export default function App() {
           </Pressable>
         </View>
         <Pressable onPress={() => toggleLike(item.id)}>
-          <Image
-            source={{ uri: item.image }}
-            style={styles.postImage}
-            placeholder={{ blurhash: 'L6PZfSi_.AyE_3t7t7R**0o#DgR4' }}
-            contentFit="cover"
-            transition={200}
-          />
+          {item.kind === 'video' ? (
+            <AutoVideo uri={item.image} style={styles.postImage} />
+          ) : (
+            <Image
+              source={{ uri: item.image }}
+              style={styles.postImage}
+              placeholder={{ blurhash: 'L6PZfSi_.AyE_3t7t7R**0o#DgR4' }}
+              contentFit="cover"
+              transition={200}
+            />
+          )}
+          {item.tone ? (
+            <View
+              pointerEvents="none"
+              style={[StyleSheet.absoluteFill, { backgroundColor: toneOverlay(item.tone) }]}
+            />
+          ) : null}
+          {item.productTags?.map((t, i) => {
+            const key = `${item.id}:${i}`;
+            const open = shopTag === key;
+            return (
+              <View key={key} style={{ position: 'absolute', left: `${t.x}%`, top: `${t.y}%` }}>
+                <Pressable
+                  style={styles.shopDot}
+                  hitSlop={10}
+                  accessibilityLabel={`View ${t.label}`}
+                  accessibilityRole="button"
+                  onPress={() => {
+                    tap();
+                    setShopTag(open ? null : key);
+                  }}>
+                  <View style={styles.shopDotInner} />
+                </Pressable>
+                {open ? (
+                  <View style={styles.shopCard}>
+                    <Text style={styles.shopLabel}>{t.label}</Text>
+                    <Text style={styles.shopPrice}>{t.price}</Text>
+                  </View>
+                ) : null}
+              </View>
+            );
+          })}
           {burstPostId === item.id ? (
             <Animated.View
               style={[
@@ -984,8 +1146,10 @@ export default function App() {
 
   const storyGroup = storyIndex !== null ? orderedStories[storyIndex] : null;
   const viewer = customStory ?? storyGroup;
-  const viewerImages = viewer ? viewer.images : [];
+  const viewerMedia = useMemo(() => (viewer ? storyMedia(viewer) : []), [viewer]);
+  const viewerImages = viewerMedia.map((m) => m.uri);
   const viewerName = viewer ? viewer.username : '';
+  const viewerItem = viewerMedia.length > 0 ? viewerMedia[storyPage % viewerMedia.length] : null;
   const closeStory = () => {
     setStoryIndex(null);
     setCustomStory(null);
@@ -1081,17 +1245,52 @@ export default function App() {
           <IconBtn icon="plus-box-outline" label="Create post" size={30} onPress={() => setCreateOpen(true)} />
         ) : null}
         {activeChat || profileUser || tab === 'profile' || tab === 'direct' || createOpen || activityOpen ? (
-          <Text style={styles.headerTitle}>
-            {activeChat
-              ? ''
-              : (profileUser?.username ?? (tab === 'direct'
-                ? 'Direct'
-                : createOpen
-                  ? 'New moment'
-                  : activityOpen
-                    ? 'Activity'
-                    : me.username))}
-          </Text>
+          tab === 'direct' && !activeChat && !profileUser && !createOpen && !activityOpen ? (
+            <Pressable
+              style={styles.feedSwitcher}
+              accessibilityLabel="Open your profile"
+              accessibilityRole="button"
+              onPress={() => setTab('profile')}>
+              {settings.privateAccount ? (
+                <MaterialCommunityIcons name="lock-outline" size={16} color={C.text} />
+              ) : null}
+              <Text style={styles.headerTitle}>{me.username}</Text>
+              <MaterialCommunityIcons name="chevron-down" size={20} color={C.text} />
+            </Pressable>
+          ) : tab === 'profile' && !profileUser && !createOpen && !activityOpen ? (
+            <View style={[styles.feedSwitcher, { gap: 6 }]}>
+              {settings.privateAccount ? (
+                <MaterialCommunityIcons name="lock-outline" size={16} color={C.text} />
+              ) : null}
+              <Text style={styles.headerTitle}>{me.username}</Text>
+            </View>
+          ) : (
+            <Text style={styles.headerTitle}>
+              {activeChat
+                ? ''
+                : (profileUser?.username ?? (createOpen
+                    ? 'New moment'
+                    : activityOpen
+                      ? 'Activity'
+                      : me.username))}
+            </Text>
+          )
+        ) : tab === 'home' ? (
+          <Pressable
+            style={styles.feedSwitcher}
+            accessibilityLabel={activeCircle ? `Feed: ${activeCircle.name}` : 'Feed: all circles'}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: circleMenuOpen }}
+            onPress={toggleCircleMenu}>
+            <Text style={styles.feedSwitcherTxt}>
+              {activeCircle ? activeCircle.name : 'All circles'}
+            </Text>
+            <MaterialCommunityIcons
+              name={circleMenuOpen ? 'chevron-up' : 'chevron-down'}
+              size={20}
+              color={C.text}
+            />
+          </Pressable>
         ) : (
           <Text style={styles.logo}>Circles</Text>
         )}
@@ -1122,7 +1321,7 @@ export default function App() {
                   onPress={() => setCreateOpen(true)}
                 />
                 <IconBtn
-                  icon="cog-outline"
+                  icon="menu"
                   label="Settings"
                   onPress={() => {
                     setSettingsPage(null);
@@ -1130,6 +1329,20 @@ export default function App() {
                   }}
                 />
               </>
+            ) : null}
+            {tab === 'direct' ? (
+              <IconBtn
+                icon="square-edit-outline"
+                label="New message"
+                size={27}
+                onPress={() => {
+                  tap();
+                  setFollowList({
+                    title: 'New message',
+                    users: users.filter((u) => u.username !== ME).map((u) => u.username),
+                  });
+                }}
+              />
             ) : null}
           </View>
         ) : profileUser ? (
@@ -1141,38 +1354,67 @@ export default function App() {
         )}
       </View>
       )}
+      {circleMenuOpen && tab === 'home' && !activeChat && !profileUser && !createOpen && !activityOpen ? (
+        <View style={styles.feedMenuWrap} pointerEvents="box-none">
+          <Pressable style={StyleSheet.absoluteFill} onPress={toggleCircleMenu} accessibilityLabel="Close feed menu" />
+          <Animated.View
+            style={[
+              styles.feedMenu,
+              {
+                opacity: circleMenuAnim,
+                transform: [
+                  { scale: circleMenuAnim.interpolate({ inputRange: [0, 1], outputRange: [0.94, 1] }) },
+                  { translateY: circleMenuAnim.interpolate({ inputRange: [0, 1], outputRange: [-8, 0] }) },
+                ],
+              },
+            ]}>
+            <Pressable
+              style={styles.circleOption}
+              accessibilityLabel="Show all circles"
+              accessibilityRole="button"
+              onPress={() => pickCircle(null)}>
+              <MaterialCommunityIcons name="earth" size={22} color={C.text} />
+              <Text style={styles.circleOptionTxt}>All circles</Text>
+              {!activeCircleId ? <MaterialCommunityIcons name="check" size={20} color={C.accent} /> : null}
+            </Pressable>
+            {myCircles.map((c) => {
+              const on = activeCircleId === c.id;
+              return (
+                <Pressable
+                  key={c.id}
+                  style={styles.circleOption}
+                  accessibilityLabel={`Show ${c.name}`}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: on }}
+                  onPress={() => pickCircle(on ? null : c.id)}>
+                  <MaterialCommunityIcons name="account-group-outline" size={22} color={C.text} />
+                  <Text style={styles.circleOptionTxt}>{c.name}</Text>
+                  {on ? <MaterialCommunityIcons name="check" size={20} color={C.accent} /> : null}
+                </Pressable>
+              );
+            })}
+          </Animated.View>
+        </View>
+      ) : null}
 
       {/* Direct inbox */}
       {tab === 'direct' && !activeChat ? (
         <FlatList
-          data={threads}
+          data={dmTab === 'requests' ? [] : dmFilter === 'unread' ? threads.filter((t) => t.last.from !== ME && !readThreads.has(t.other)) : threads}
           keyExtractor={(t) => t.other}
           contentContainerStyle={{ paddingBottom: 140 }}
           ListHeaderComponent={
             <View>
-              <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8, flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-                <View style={[styles.searchField, { flex: 1 }]}>
+              <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8 }}>
+                <View style={styles.searchField}>
                   <MaterialCommunityIcons name="magnify" size={18} color={C.muted} />
                   <TextInput
-                    placeholder="Search chats"
+                    placeholder="Search or ask Meta AI"
                     placeholderTextColor={C.muted}
                     style={styles.searchInput}
                     autoCapitalize="none"
                   />
                 </View>
-                <Pressable
-                  style={styles.composeBtn}
-                  accessibilityLabel="New message"
-                  accessibilityRole="button"
-                  onPress={() => {
-                    tap();
-                    setFollowList({
-                      title: 'New message',
-                      users: users.filter((u) => u.username !== ME).map((u) => u.username),
-                    });
-                  }}>
-                  <MaterialCommunityIcons name="square-edit-outline" size={22} color={C.text} />
-                </Pressable>
               </View>
               <View style={{ flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingBottom: 4 }}>
                 {(['all', 'unread'] as const).map((f) => {
@@ -1192,6 +1434,37 @@ export default function App() {
                   );
                 })}
               </View>
+              <View style={styles.dmTabs}>
+                <Pressable onPress={() => setDmTab('messages')}>
+                  <Text style={[styles.dmTab, dmTab === 'messages' && styles.dmTabOn]}>Messages</Text>
+                </Pressable>
+                <Pressable onPress={() => setDmTab('requests')}>
+                  <Text style={[styles.dmTab, { color: '#0095F6' }]}>
+                    Requests{settings.followRequests.length > 0 ? ` (${settings.followRequests.length})` : ''}
+                  </Text>
+                </Pressable>
+              </View>
+              {dmTab === 'requests' ? (
+                <View style={{ paddingBottom: 8 }}>
+                  {settings.followRequests.length === 0 ? (
+                    <Text style={[styles.muted, { paddingHorizontal: 16 }]}>No message requests.</Text>
+                  ) : (
+                    settings.followRequests.map((r) => (
+                      <View key={r} style={styles.thread}>
+                        <Avatar uri={userByName(users, r).avatar} size={44} />
+                        <Text style={[styles.postUser, { flex: 1 }]}>{r}</Text>
+                        <Pressable style={styles.reqBtn} onPress={() => acceptRequest(r)}>
+                          <Text style={styles.publishTxt}>Accept</Text>
+                        </Pressable>
+                        <Pressable style={styles.secondary} onPress={() => declineRequest(r)}>
+                          <Text style={styles.secondaryTxt}>Decline</Text>
+                        </Pressable>
+                      </View>
+                    ))
+                  )}
+                </View>
+              ) : null}
+              {dmTab === 'messages' ? (
               <View style={{ paddingHorizontal: 12 }}>
                 <Text style={styles.sectionTitle}>Notes</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
@@ -1298,16 +1571,17 @@ export default function App() {
                     </Pressable>
                   ))}
                </ScrollView>
-             </View>
-             </View>
-          }
-          renderItem={({ item }) => {
+              </View>
+              ) : null}
+            </View>
+           }
+           renderItem={({ item }) => {
             const u = userByName(users, item.other);
             const unread = item.last.from !== ME && !readThreads.has(item.other);
             return (
               <Pressable style={styles.dmThread} onPress={() => setActiveChat(item.other)}>
                 <View>
-                  <Avatar uri={u.avatar} size={52} />
+                  <Avatar uri={u.avatar} size={56} />
                   <View style={styles.activeDot} />
                 </View>
                 <View style={{ flex: 1 }}>
@@ -1315,28 +1589,29 @@ export default function App() {
                   <Text
                     numberOfLines={1}
                     style={[styles.dmSnippet, unread && { color: C.text, fontWeight: '600' }]}>
-                    {item.last.from === ME ? `You: ${item.last.text}` : item.last.text}
+                    {item.last.from === ME
+                      ? `Sent ${timeAgo(item.last.createdAt).toLowerCase()}`
+                      : `${item.last.text} · ${timeAgo(item.last.createdAt).toLowerCase()}`}
                   </Text>
                 </View>
-                <View style={{ alignItems: 'flex-end', gap: 4 }}>
-                  <Text style={styles.dmTime}>{timeAgo(item.last.createdAt)}</Text>
-                  {unread ? (
-                    item.unread > 1 ? (
-                      <View style={styles.unreadBadge}>
-                        <Text style={styles.unreadBadgeTxt}>{item.unread}</Text>
-                      </View>
-                    ) : (
-                      <View style={styles.unreadDot} />
-                    )
-                  ) : null}
-                </View>
+                {unread ? (
+                  item.unread > 1 ? (
+                    <View style={styles.unreadBadge}>
+                      <Text style={styles.unreadBadgeTxt}>{item.unread}</Text>
+                    </View>
+                  ) : (
+                    <View style={styles.unreadDot} />
+                  )
+                ) : null}
               </Pressable>
             );
           }}
-          ListEmptyComponent={
-            <View style={styles.center}>
-              <Text style={styles.muted}>No messages yet — start one from Contacts.</Text>
-            </View>
+           ListEmptyComponent={
+            dmTab === 'requests' ? null : (
+              <View style={styles.center}>
+                <Text style={styles.muted}>No messages yet — start one from Contacts.</Text>
+              </View>
+            )
           }
         />
       ) : activeChat ? (
@@ -1529,7 +1804,7 @@ export default function App() {
             </>
           )}
         </ScrollView>
-      ) : tab === 'home' ? (
+      ) : tab === 'home' && !createOpen && !activityOpen ? (
         <FlatList
           data={visiblePosts}
           keyExtractor={(p) => p.id}
@@ -1537,81 +1812,6 @@ export default function App() {
           contentContainerStyle={{ paddingBottom: 140 }}
           ListHeaderComponent={
             <View>
-              <View style={{ alignItems: 'center', paddingTop: 12 }}>
-                <Pressable
-                  style={styles.circleFab}
-                  accessibilityLabel={activeCircle ? `Circle filter: ${activeCircle.name}` : 'Circle filter: all circles'}
-                  accessibilityRole="button"
-                  accessibilityState={{ expanded: circleMenuOpen }}
-                  onPress={toggleCircleMenu}>
-                  <MaterialCommunityIcons name="account-group" size={20} color="#fff" />
-                  <Text style={styles.circleFabTxt}>
-                    {activeCircle ? activeCircle.name : 'All circles'}
-                  </Text>
-                  <MaterialCommunityIcons
-                    name={circleMenuOpen ? 'chevron-up' : 'chevron-down'}
-                    size={18}
-                    color="#fff"
-                  />
-                </Pressable>
-                {circleMenuOpen ? (
-                  <Animated.View
-                    style={[
-                      styles.circleMenu,
-                      {
-                        opacity: circleMenuAnim,
-                        transform: [
-                          {
-                            scale: circleMenuAnim.interpolate({
-                              inputRange: [0, 1],
-                              outputRange: [0.94, 1],
-                            }),
-                          },
-                          {
-                            translateY: circleMenuAnim.interpolate({
-                              inputRange: [0, 1],
-                              outputRange: [-8, 0],
-                            }),
-                          },
-                        ],
-                      },
-                    ]}>
-                    <Pressable
-                      style={styles.circleOption}
-                      accessibilityLabel="Show all circles"
-                      accessibilityRole="button"
-                      onPress={() => pickCircle(null)}>
-                      <MaterialCommunityIcons name="earth" size={22} color={C.text} />
-                      <Text style={styles.circleOptionTxt}>All circles</Text>
-                      {!activeCircleId ? (
-                        <MaterialCommunityIcons name="check" size={20} color={C.accent} />
-                      ) : null}
-                    </Pressable>
-                    {myCircles.map((c) => {
-                      const on = activeCircleId === c.id;
-                      return (
-                        <Pressable
-                          key={c.id}
-                          style={styles.circleOption}
-                          accessibilityLabel={`Show ${c.name}`}
-                          accessibilityRole="button"
-                          accessibilityState={{ selected: on }}
-                          onPress={() => pickCircle(on ? null : c.id)}>
-                          <MaterialCommunityIcons
-                            name="account-group-outline"
-                            size={22}
-                            color={C.text}
-                          />
-                          <Text style={styles.circleOptionTxt}>{c.name}</Text>
-                          {on ? (
-                            <MaterialCommunityIcons name="check" size={20} color={C.accent} />
-                          ) : null}
-                        </Pressable>
-                      );
-                    })}
-                  </Animated.View>
-                ) : null}
-              </View>
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
@@ -1669,7 +1869,7 @@ export default function App() {
             </View>
           }
         />
-      ) : tab === 'reels' ? (
+      ) : tab === 'reels' && !createOpen && !activityOpen ? (
         <View
           style={{ flex: 1, backgroundColor: '#000' }}
           onLayout={(e) => {
@@ -1678,7 +1878,7 @@ export default function App() {
           }}>
           <FlatList
             ref={reelsRef}
-            data={filteredPosts}
+            data={reelsPosts}
             keyExtractor={(p) => p.id}
             pagingEnabled
             showsVerticalScrollIndicator={false}
@@ -1694,18 +1894,64 @@ export default function App() {
               const authorCircle = circles.find((c) => c.members.includes(item.username));
               return (
                 <View style={[styles.reel, { height: reelH }]}>
-                  <Image
-                    source={{ uri: item.image }}
-                    style={{ width: '100%', height: '100%' }}
-                    contentFit="cover"
-                    placeholder={{ blurhash: 'L6PZfSi_.AyE_3t7t7R**0o#DgR4' }}
-                  />
+                  {item.kind === 'video' ? (
+                    <AutoVideo uri={item.image} style={{ width: '100%', height: '100%' }} />
+                  ) : (
+                    <Image
+                      source={{ uri: item.image }}
+                      style={{ width: '100%', height: '100%' }}
+                      contentFit="cover"
+                      placeholder={{ blurhash: 'L6PZfSi_.AyE_3t7t7R**0o#DgR4' }}
+                    />
+                  )}
+                  {item.tone ? (
+                    <View
+                      pointerEvents="none"
+                      style={[StyleSheet.absoluteFill, { backgroundColor: toneOverlay(item.tone) }]}
+                    />
+                  ) : null}
                   <View style={styles.reelScrim} pointerEvents="none" />
                   <View style={styles.reelTop}>
-                    <Text style={styles.reelTitle}>Reels</Text>
-                    <Text style={styles.reelCounter}>
-                      {index + 1} / {filteredPosts.length}
-                    </Text>
+                    <Pressable
+                      style={{ flexDirection: 'row', alignItems: 'center' }}
+                      hitSlop={8}
+                      accessibilityLabel="Back to top"
+                      accessibilityRole="button"
+                      onPress={() => {
+                        try {
+                          reelsRef.current?.scrollToIndex({ index: 0, animated: true });
+                        } catch {
+                          setReelIndex(0);
+                        }
+                      }}>
+                      <Text style={styles.reelTitle}>Reels</Text>
+                      <MaterialCommunityIcons name="chevron-down" size={22} color="#fff" />
+                    </Pressable>
+                    <Pressable
+                      style={[styles.reelFriends, reelsFriendsOnly && styles.reelFriendsOn]}
+                      hitSlop={8}
+                      accessibilityLabel="Friends-only reels"
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: reelsFriendsOnly }}
+                      onPress={() => {
+                        tap();
+                        setReelsFriendsOnly((v) => !v);
+                        setReelIndex(0);
+                      }}>
+                      <View style={{ flexDirection: 'row' }}>
+                        {myFollowing.slice(0, 3).map((u, i) => (
+                          <Image
+                            key={u}
+                            source={{ uri: userByName(users, u).avatar }}
+                            style={[
+                              styles.reelFriendAvatar,
+                              i > 0 && { marginLeft: -10 },
+                            ]}
+                          />
+                        ))}
+                      </View>
+                      <Text style={styles.reelFriendsTxt}>Friends</Text>
+                    </Pressable>
                     <Pressable
                       hitSlop={8}
                       accessibilityLabel="Open camera"
@@ -1714,6 +1960,9 @@ export default function App() {
                       <MaterialCommunityIcons name="camera-outline" size={26} color="#fff" />
                     </Pressable>
                   </View>
+                  <Text style={styles.reelCounter}>
+                    {index + 1} / {reelsPosts.length}
+                  </Text>
                   <View style={styles.reelSide}>
                     <View style={{ alignItems: 'center', gap: 4 }}>
                       <Pressable
@@ -1752,6 +2001,20 @@ export default function App() {
                       }}>
                       <MaterialCommunityIcons name="send-outline" size={26} color="#fff" />
                     </Pressable>
+                    <View style={{ alignItems: 'center', gap: 4 }}>
+                      <Pressable
+                        style={styles.reelGlassBtn}
+                        hitSlop={8}
+                        accessibilityLabel="Send a gift"
+                        accessibilityRole="button"
+                        onPress={() => {
+                          success();
+                          setReelGifts((prev) => ({ ...prev, [item.id]: (prev[item.id] ?? 0) + 1 }));
+                        }}>
+                        <MaterialCommunityIcons name="gift-outline" size={26} color="#fff" />
+                      </Pressable>
+                      <Text style={styles.reelCount}>{reelGifts[item.id] ?? 0}</Text>
+                    </View>
                   </View>
                   <View style={styles.reelBottom}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -1777,16 +2040,55 @@ export default function App() {
                         Original audio · {item.username}
                       </Text>
                     </View>
+                    <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                      <Pressable
+                        style={styles.reelVote}
+                        accessibilityLabel="Not interested"
+                        accessibilityRole="button"
+                        onPress={() => {
+                          try {
+                            reelsRef.current?.scrollToIndex({ index: Math.min(index + 1, reelsPosts.length - 1), animated: true });
+                          } catch {
+                            setReelIndex(index + 1);
+                          }
+                        }}>
+                        <MaterialCommunityIcons name="close" size={16} color="#fff" />
+                        <Text style={styles.reelVoteTxt}>Not interested</Text>
+                      </Pressable>
+                      <Pressable
+                        style={styles.reelVote}
+                        accessibilityLabel="Interested"
+                        accessibilityRole="button"
+                        onPress={() => {
+                          if (!item.likes.includes(ME)) toggleLike(item.id);
+                          try {
+                            reelsRef.current?.scrollToIndex({ index: Math.min(index + 1, reelsPosts.length - 1), animated: true });
+                          } catch {
+                            setReelIndex(index + 1);
+                          }
+                        }}>
+                        <MaterialCommunityIcons name="check" size={16} color="#fff" />
+                        <Text style={styles.reelVoteTxt}>Interested</Text>
+                      </Pressable>
+                    </View>
                   </View>
+                  <Pressable
+                    style={styles.reelMore}
+                    hitSlop={8}
+                    accessibilityLabel="More options"
+                    accessibilityRole="button"
+                    onPress={() => setOptionsPostId(item.id)}>
+                    <MaterialCommunityIcons name="dots-horizontal" size={22} color="#fff" />
+                  </Pressable>
                 </View>
               );
             }}
           />
         </View>
-      ) : tab === 'search' ? (
+      ) : tab === 'search' && !createOpen && !activityOpen ? (
         <View style={{ flex: 1 }}>
-          <View style={{ paddingHorizontal: 12, paddingTop: 12, paddingBottom: 8 }}>
-            <View style={styles.searchField}>
+          <View style={{ paddingHorizontal: 12, paddingTop: 12, paddingBottom: 8, flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+            <View style={[styles.searchField, { flex: 1 }]}>
               <MaterialCommunityIcons name="magnify" size={18} color={C.muted} />
               <TextInput
                 value={query}
@@ -1808,23 +2110,41 @@ export default function App() {
                 </Pressable>
               ) : null}
             </View>
-            <View style={styles.profileTabs}>
-              <Pressable onPress={() => setExploreMode('posts')}>
-                <Text style={[styles.profileTab, exploreMode === 'posts' && styles.profileTabOn]}>
-                  Posts
-                </Text>
-              </Pressable>
-              <Pressable onPress={() => setExploreMode('reels')}>
-                <Text style={[styles.profileTab, exploreMode === 'reels' && styles.profileTabOn]}>
-                  Reels
-                </Text>
-              </Pressable>
-              <Pressable onPress={() => setExploreMode('people')}>
-                <Text style={[styles.profileTab, exploreMode === 'people' && styles.profileTabOn]}>
-                  People
-                </Text>
-              </Pressable>
-            </View>
+            <IconBtn
+              icon="bookmark-outline"
+              label="Saved posts"
+              size={26}
+              onPress={() => {
+                setTab('profile');
+                setProfileMode('saved');
+              }}
+            />
+            <IconBtn
+              icon={exploreCols === 3 ? 'dots-grid' : 'grid-large'}
+              label="Toggle grid density"
+              size={26}
+              onPress={() => {
+                tap();
+                setExploreCols((c) => (c === 3 ? 2 : 3));
+              }}
+            />
+          </View>
+          <View style={[styles.profileTabs, { paddingHorizontal: 16, marginTop: 0 }]}>
+            <Pressable onPress={() => setExploreMode('posts')}>
+              <Text style={[styles.profileTab, exploreMode === 'posts' && styles.profileTabOn]}>
+                Posts
+              </Text>
+            </Pressable>
+            <Pressable onPress={() => setExploreMode('reels')}>
+              <Text style={[styles.profileTab, exploreMode === 'reels' && styles.profileTabOn]}>
+                Reels
+              </Text>
+            </Pressable>
+            <Pressable onPress={() => setExploreMode('people')}>
+              <Text style={[styles.profileTab, exploreMode === 'people' && styles.profileTabOn]}>
+                People
+              </Text>
+            </Pressable>
           </View>
           {query.trim() !== '' ? (
           <ScrollView contentContainerStyle={{ paddingBottom: 140 }}>
@@ -1858,8 +2178,17 @@ export default function App() {
             </View>
             <View style={styles.grid}>
               {filteredPosts.map((p) => (
-                <Pressable key={p.id} style={styles.cell} onPress={() => setCommentsPostId(p.id)}>
+                <Pressable key={p.id} style={[styles.cell, exploreCols === 2 && { width: '50%' }]} onPress={() => setCommentsPostId(p.id)}>
                   <Image source={{ uri: p.image }} style={styles.cellImg} contentFit="cover" />
+                  {p.kind === 'video' ? (
+                    <View style={styles.reelBadge}>
+                      <MaterialCommunityIcons name="play" size={16} color="#fff" />
+                    </View>
+                  ) : null}
+                  <View style={styles.viewBadge}>
+                    <MaterialCommunityIcons name="eye-outline" size={14} color="#fff" />
+                    <Text style={styles.viewTxt}>{viewsForPost(p.id)}</Text>
+                  </View>
                 </Pressable>
               ))}
             </View>
@@ -1878,7 +2207,7 @@ export default function App() {
               {filteredPosts.map((p, i) => (
                 <Pressable
                   key={p.id}
-                  style={styles.cell}
+                  style={[styles.cell, exploreCols === 2 && { width: '50%' }]}
                   onPress={() => {
                     setReelIndex(i);
                     setTab('reels');
@@ -1886,6 +2215,10 @@ export default function App() {
                   <Image source={{ uri: p.image }} style={styles.cellImg} contentFit="cover" />
                   <View style={styles.reelBadge}>
                     <MaterialCommunityIcons name="play" size={16} color="#fff" />
+                  </View>
+                  <View style={styles.viewBadge}>
+                    <MaterialCommunityIcons name="eye-outline" size={14} color="#fff" />
+                    <Text style={styles.viewTxt}>{viewsForPost(p.id)}</Text>
                   </View>
                 </Pressable>
               ))}
@@ -1977,8 +2310,17 @@ export default function App() {
           <ScrollView contentContainerStyle={{ paddingBottom: 140 }}>
             <View style={styles.grid}>
               {filteredPosts.map((p) => (
-                <Pressable key={p.id} style={styles.cell} onPress={() => setCommentsPostId(p.id)}>
+                <Pressable key={p.id} style={[styles.cell, exploreCols === 2 && { width: '50%' }]} onPress={() => setCommentsPostId(p.id)}>
                   <Image source={{ uri: p.image }} style={styles.cellImg} contentFit="cover" />
+                  {p.kind === 'video' ? (
+                    <View style={styles.reelBadge}>
+                      <MaterialCommunityIcons name="play" size={16} color="#fff" />
+                    </View>
+                  ) : null}
+                  <View style={styles.viewBadge}>
+                    <MaterialCommunityIcons name="eye-outline" size={14} color="#fff" />
+                    <Text style={styles.viewTxt}>{viewsForPost(p.id)}</Text>
+                  </View>
                 </Pressable>
               ))}
             </View>
@@ -2039,18 +2381,61 @@ export default function App() {
               })}
             </ScrollView>
           </View>
-          <Image
-            source={{ uri: pickedUri ?? createPhoto(createSeed) }}
-            style={{ width: '100%', aspectRatio: 4 / 5, borderRadius: 16, backgroundColor: '#efefef' }}
-            contentFit="cover"
-          />
-          <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+          <View style={{ width: '100%', aspectRatio: 4 / 5, borderRadius: 16, overflow: 'hidden', backgroundColor: '#efefef' }}>
+            {pickedUri && pickedKind === 'video' ? (
+              <AutoVideo uri={pickedUri} style={{ width: '100%', height: '100%' }} />
+            ) : (
+              <Image
+                source={{ uri: pickedUri ?? createPhoto(createSeed) }}
+                style={{ width: '100%', height: '100%' }}
+                contentFit="cover"
+              />
+            )}
+            {createTone !== 'normal' ? (
+              <View
+                pointerEvents="none"
+                style={[StyleSheet.absoluteFill, { backgroundColor: toneOverlay(createTone) }]}
+              />
+            ) : null}
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginHorizontal: -16, paddingHorizontal: 16, marginTop: 12 }}>
+            <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center', paddingRight: 8 }}>
+              {Object.entries(POST_TONES).map(([key, t]) => {
+                const on = createTone === key;
+                return (
+                  <Pressable
+                    key={key}
+                    style={{ alignItems: 'center', gap: 4 }}
+                    accessibilityLabel={`${t.label} filter`}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: on }}
+                    onPress={() => {
+                      tap();
+                      setCreateTone(key);
+                    }}>
+                    <View
+                      style={[
+                        styles.toneSwatch,
+                        { backgroundColor: t.overlay === 'transparent' ? C.fill : t.overlay },
+                        on && { borderColor: '#0095F6', borderWidth: 2.5 },
+                      ]}
+                    />
+                    <Text style={[styles.muted, { fontSize: 11 }, on && { color: C.text, fontWeight: '700' }]}>
+                      {t.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </ScrollView>
+          <View style={{ flexDirection: 'row', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
             <Pressable
               style={styles.secondary}
               onPress={async () => {
                 const photo = await takePhoto();
                 if (photo) {
                   setPickedUri(photo.uri);
+                  setPickedKind('image');
                   setPhotoMsg('');
                 } else {
                   setPhotoMsg('Camera permission is needed. Allow it in Settings › Permissions.');
@@ -2064,17 +2449,71 @@ export default function App() {
                 const photo = await pickFromLibrary();
                 if (photo) {
                   setPickedUri(photo.uri);
+                  setPickedKind('image');
                   setPhotoMsg('');
                 } else {
                   setPhotoMsg('Photo access is needed. Allow it in Settings › Permissions.');
                 }
               }}>
-              <Text style={styles.secondaryTxt}>Choose from library</Text>
+              <Text style={styles.secondaryTxt}>Choose photo</Text>
+            </Pressable>
+            <Pressable
+              style={styles.secondary}
+              onPress={async () => {
+                const clip = await pickVideoFromLibrary();
+                if (clip) {
+                  setPickedUri(clip.uri);
+                  setPickedKind('video');
+                  setPhotoMsg('');
+                } else {
+                  setPhotoMsg('Photo access is needed. Allow it in Settings › Permissions.');
+                }
+              }}>
+              <Text style={styles.secondaryTxt}>Choose video</Text>
             </Pressable>
             <Pressable style={styles.secondary} onPress={() => setCameraOpen('create')}>
               <Text style={styles.secondaryTxt}>In-app camera</Text>
             </Pressable>
           </View>
+          {pickedUri && pickedKind === 'image' && pickedUri.startsWith('file') ? (
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 8, alignItems: 'center' }}>
+              <Text style={styles.muted}>Edit:</Text>
+              <Pressable
+                style={styles.secondary}
+                accessibilityLabel="Rotate photo"
+                accessibilityRole="button"
+                disabled={editBusy}
+                onPress={async () => {
+                  setEditBusy(true);
+                  try {
+                    const out = await manipulateAsync(pickedUri, [{ rotate: 90 }], { compress: 0.85, format: SaveFormat.JPEG });
+                    setPickedUri(out.uri);
+                  } catch {
+                    setPhotoMsg('Could not edit this photo.');
+                  }
+                  setEditBusy(false);
+                }}>
+                <Text style={styles.secondaryTxt}>{editBusy ? 'Working…' : 'Rotate'}</Text>
+              </Pressable>
+              <Pressable
+                style={styles.secondary}
+                accessibilityLabel="Flip photo"
+                accessibilityRole="button"
+                disabled={editBusy}
+                onPress={async () => {
+                  setEditBusy(true);
+                  try {
+                    const out = await manipulateAsync(pickedUri, [{ flip: FlipType.Horizontal }], { compress: 0.85, format: SaveFormat.JPEG });
+                    setPickedUri(out.uri);
+                  } catch {
+                    setPhotoMsg('Could not edit this photo.');
+                  }
+                  setEditBusy(false);
+                }}>
+                <Text style={styles.secondaryTxt}>Flip</Text>
+              </Pressable>
+            </View>
+          ) : null}
           {photoMsg ? (
             <View>
               <Text style={styles.muted}>{photoMsg}</Text>
@@ -2084,7 +2523,13 @@ export default function App() {
             </View>
           ) : null}
           {pickedUri ? (
-            <Pressable style={styles.miniFollow} onPress={() => setPickedUri(null)}>
+            <Pressable
+              style={styles.miniFollow}
+              onPress={() => {
+                setPickedUri(null);
+                setPickedKind('image');
+                setCreateTone('normal');
+              }}>
               <Text style={{ color: '#0095f6', fontWeight: '600' }}>Use a sample photo instead</Text>
             </Pressable>
           ) : null}
@@ -2140,17 +2585,7 @@ export default function App() {
         </ScrollView>
       ) : activityOpen ? (
         <View style={{ flex: 1 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', padding: 12, paddingBottom: 0 }}>
-            <Pressable
-              hitSlop={8}
-              accessibilityLabel="Close activity"
-              accessibilityRole="button"
-              onPress={() => setActivityOpen(false)}>
-              <MaterialCommunityIcons name="chevron-left" size={28} color={C.text} />
-            </Pressable>
-            <Text style={[styles.sectionTitle, { flex: 1, textAlign: 'center', marginBottom: 0 }]}>Activity</Text>
-            <View style={{ width: 28 }} />
-          </View>
+          <View style={{ height: 4 }} />
           <FlatList
           style={{ flex: 1 }}
           data={activity}
@@ -2334,6 +2769,17 @@ export default function App() {
                   }}>
                   <Text style={styles.profileBtnTxt}>Share profile</Text>
                 </Pressable>
+                <Pressable
+                  style={[styles.profileBtn, { width: 48 }]}
+                  accessibilityLabel="Discover people"
+                  accessibilityRole="button"
+                  onPress={() => {
+                    tap();
+                    setTab('search');
+                    setExploreMode('people');
+                  }}>
+                  <MaterialCommunityIcons name="account-plus-outline" size={20} color={C.text} />
+                </Pressable>
               </View>
             ) : null}
             <Text style={[styles.sectionTitle, { marginTop: 12 }]}>Highlights</Text>
@@ -2383,16 +2829,12 @@ export default function App() {
               {(
                 [
                   { mode: 'posts', icon: 'grid', label: 'Posts grid' },
+                  { mode: 'reels', icon: 'play-box-outline', label: 'Reels grid' },
                   { mode: 'saved', icon: 'bookmark-outline', label: 'Saved posts' },
-                  { mode: 'archive', icon: 'archive-outline', label: 'Archived posts' },
+                  { mode: 'tagged', icon: 'tag-outline', label: 'Tagged posts' },
                 ] as const
               ).map((t) => {
-                const count =
-                  t.mode === 'saved'
-                    ? `, ${savedPosts.length}`
-                    : t.mode === 'archive'
-                      ? `, ${settings.archived.length}`
-                      : '';
+                const count = t.mode === 'saved' ? `, ${savedPosts.length}` : '';
                 const on = profileMode === t.mode;
                 return (
                   <Pressable
@@ -2402,7 +2844,7 @@ export default function App() {
                       alignItems: 'center',
                       paddingVertical: 8,
                       borderBottomWidth: on ? 1.5 : 0,
-                      borderBottomColor: '#000',
+                      borderBottomColor: C.text,
                     }}
                     accessibilityLabel={t.label + count}
                     accessibilityRole="button"
@@ -2457,26 +2899,44 @@ export default function App() {
                 accessibilityLabel="Clear collection filter"
                 accessibilityRole="button"
                 onPress={() => setActiveCollection(null)}>
-                <Text>{activeCollection} ✕</Text>
+                <Text style={styles.secondaryTxt}>{activeCollection} ✕</Text>
               </Pressable>
             </View>
           ) : null}
           <View style={styles.grid}>
             {(profileMode === 'posts'
               ? myPosts.filter((p) => !settings.archived.includes(p.id))
-              : profileMode === 'saved'
-                ? activeCollection
-                  ? savedPosts.filter(
-                      (p) =>
-                        settings.collections.find((c) => c.name === activeCollection)?.ids.includes(p.id) ?? false,
-                    )
-                  : savedPosts
-                : posts.filter((p) => settings.archived.includes(p.id))
-            ).map((p) => (
-              <Pressable key={p.id} style={styles.cell} onPress={() => setCommentsPostId(p.id)}>
-                <Image source={{ uri: p.image }} style={styles.cellImg} contentFit="cover" />
-              </Pressable>
-            ))}
+              : profileMode === 'reels'
+                ? myPosts.filter((p) => !settings.archived.includes(p.id))
+                : profileMode === 'saved'
+                  ? activeCollection
+                    ? savedPosts.filter(
+                        (p) =>
+                          settings.collections.find((c) => c.name === activeCollection)?.ids.includes(p.id) ?? false,
+                      )
+                    : savedPosts
+                  : posts.filter((p) => p.comments.some((c) => c.username === ME)))
+              .map((p) => (
+                <Pressable
+                  key={p.id}
+                  style={styles.cell}
+                  onPress={() => {
+                    if (profileMode === 'reels') {
+                      const i = filteredPosts.findIndex((f) => f.id === p.id);
+                      setReelIndex(i >= 0 ? i : 0);
+                      setTab('reels');
+                    } else {
+                      setCommentsPostId(p.id);
+                    }
+                  }}>
+                  <Image source={{ uri: p.image }} style={styles.cellImg} contentFit="cover" />
+                  {profileMode === 'reels' || p.kind === 'video' ? (
+                    <View style={styles.reelBadge}>
+                      <MaterialCommunityIcons name="play" size={16} color="#fff" />
+                    </View>
+                  ) : null}
+                </Pressable>
+              ))}
           </View>
           {profileMode === 'posts' && myPosts.filter((p) => !settings.archived.includes(p.id)).length === 0 ? (
             <View style={styles.center}>
@@ -2502,22 +2962,14 @@ export default function App() {
               </Pressable>
             </View>
           ) : null}
-          {profileMode === 'archive' ? (
-            <View style={{ paddingHorizontal: 12, paddingBottom: 12 }}>
-              {settings.archived.length === 0 ? (
-                <Text style={styles.muted}>Nothing archived. Archive any post from its ••• menu and it will wait for you here.</Text>
-              ) : (
-                posts
-                  .filter((p) => settings.archived.includes(p.id))
-                  .map((p) => (
-                    <View key={p.id} style={styles.thread}>
-                      <Text style={[styles.postUser, { flex: 1 }]}>{p.caption.slice(0, 40)}</Text>
-                      <Pressable style={styles.miniFollow} onPress={() => unarchivePost(p.id)}>
-                        <Text style={{ color: '#0095f6', fontWeight: '600' }}>Unarchive</Text>
-                      </Pressable>
-                    </View>
-                  ))
-              )}
+          {profileMode === 'reels' && myPosts.filter((p) => !settings.archived.includes(p.id)).length === 0 ? (
+            <View style={styles.center}>
+              <Text style={styles.muted}>No reels yet — your video moments will land here.</Text>
+            </View>
+          ) : null}
+          {profileMode === 'tagged' && posts.filter((p) => p.comments.some((c) => c.username === ME)).length === 0 ? (
+            <View style={styles.center}>
+              <Text style={styles.muted}>No tagged posts yet — photos people tag you in show up here.</Text>
             </View>
           ) : null}
         </ScrollView>
@@ -2530,57 +2982,67 @@ export default function App() {
             <BlurView
               intensity={70}
               tint={dark ? 'dark' : 'light'}
-              style={[StyleSheet.absoluteFill, { borderRadius: 28 }]}
+              style={StyleSheet.absoluteFill}
             />
-            <IconBtn
-              icon={tab === 'home' ? 'home' : 'home-outline'}
-              label="Home feed"
-              size={28}
-              selected={tab === 'home'}
-              color={tab === 'home' ? C.text : C.muted}
-              onPress={() => setTab('home')}
-            />
-            <IconBtn
-              icon="play-box-outline"
-              label="Reels"
-              size={28}
-              selected={tab === 'reels'}
-              color={tab === 'reels' ? C.text : C.muted}
-              onPress={() => setTab('reels')}
-            />
-            <Pressable
-              onPress={() => setTab('direct')}
-              hitSlop={8}
-              accessibilityLabel={unreadCount > 0 ? `Direct messages, ${unreadCount} unread` : 'Direct messages'}
-              accessibilityRole="button"
-              accessibilityState={{ selected: tab === 'direct' }}
-              style={({ pressed }) => ({ opacity: pressed ? 0.55 : 1 })}>
-              <View>
-                <MaterialCommunityIcons
-                  name={tab === 'direct' ? 'send' : 'send-outline'}
-                  size={28}
-                  color={C.text}
-                />
-                {unreadCount > 0 ? <View style={styles.badgeDot} /> : null}
-              </View>
-          </Pressable>
-          <IconBtn
-            icon="magnify"
-            label="Search and explore"
-            size={28}
-            selected={tab === 'search'}
-            color={tab === 'search' ? C.text : C.muted}
-            onPress={() => setTab('search')}
-          />
-          <Pressable
-            onPress={() => setTab('profile')}
-            hitSlop={8}
-            accessibilityLabel="Your profile"
-            accessibilityRole="button"
-            accessibilityState={{ selected: tab === 'profile' }}
-            style={({ pressed }) => ({ opacity: pressed ? 0.55 : 1 })}>
-            <Avatar uri={me.avatar} size={24} ring={tab === 'profile'} />
-          </Pressable>
+            <View style={[styles.tabItem, tab === 'home' && styles.tabItemOn]}>
+              <IconBtn
+                icon={tab === 'home' ? 'home' : 'home-outline'}
+                label="Home feed"
+                size={28}
+                selected={tab === 'home'}
+                color={tab === 'home' ? C.text : C.muted}
+                onPress={() => setTab('home')}
+              />
+            </View>
+            <View style={[styles.tabItem, tab === 'reels' && styles.tabItemOn]}>
+              <IconBtn
+                icon="play-box-outline"
+                label="Reels"
+                size={28}
+                selected={tab === 'reels'}
+                color={tab === 'reels' ? C.text : C.muted}
+                onPress={() => setTab('reels')}
+              />
+            </View>
+            <View style={[styles.tabItem, tab === 'direct' && styles.tabItemOn]}>
+              <Pressable
+                onPress={() => setTab('direct')}
+                hitSlop={8}
+                accessibilityLabel={unreadCount > 0 ? `Direct messages, ${unreadCount} unread` : 'Direct messages'}
+                accessibilityRole="button"
+                accessibilityState={{ selected: tab === 'direct' }}
+                style={({ pressed }) => ({ opacity: pressed ? 0.55 : 1 })}>
+                <View>
+                  <MaterialCommunityIcons
+                    name={tab === 'direct' ? 'send' : 'send-outline'}
+                    size={28}
+                    color={C.text}
+                  />
+                  {unreadCount > 0 ? <View style={styles.badgeDot} /> : null}
+                </View>
+              </Pressable>
+            </View>
+            <View style={[styles.tabItem, tab === 'search' && styles.tabItemOn]}>
+              <IconBtn
+                icon="magnify"
+                label="Search and explore"
+                size={28}
+                selected={tab === 'search'}
+                color={tab === 'search' ? C.text : C.muted}
+                onPress={() => setTab('search')}
+              />
+            </View>
+            <View style={[styles.tabItem, tab === 'profile' && styles.tabItemOn]}>
+              <Pressable
+                onPress={() => setTab('profile')}
+                hitSlop={8}
+                accessibilityLabel="Your profile"
+                accessibilityRole="button"
+                accessibilityState={{ selected: tab === 'profile' }}
+                style={({ pressed }) => ({ opacity: pressed ? 0.55 : 1 })}>
+                <Avatar uri={me.avatar} size={24} ring={tab === 'profile'} />
+              </Pressable>
+            </View>
           </View>
         </View>
       ) : null}
@@ -2597,11 +3059,25 @@ export default function App() {
                   if (storyPage + 1 < viewerImages.length) setStoryPage(storyPage + 1);
                   else closeStory();
                 }}>
-                <Image
-                  source={{ uri:viewerImages[storyPage % viewerImages.length] }}
-                  style={{ width: '100%', height: '100%' }}
-                  contentFit="cover"
-                />
+                {viewerItem?.kind === 'video' ? (
+                  <AutoVideo
+                    key={`${viewerName}-${storyPage}`}
+                    uri={viewerItem.uri}
+                    style={{ width: '100%', height: '100%' }}
+                  />
+                ) : (
+                  <Image
+                    source={{ uri: viewerImages[storyPage % viewerImages.length] }}
+                    style={{ width: '100%', height: '100%' }}
+                    contentFit="cover"
+                  />
+                )}
+                {viewerItem?.tone ? (
+                  <View
+                    pointerEvents="none"
+                    style={[StyleSheet.absoluteFill, { backgroundColor: toneOverlay(viewerItem.tone) }]}
+                  />
+                ) : null}
               </Pressable>
               <View style={styles.storyHeader}>
                 <View style={{ flexDirection: 'row', gap: 4, width: '100%' }}>
@@ -2930,18 +3406,61 @@ export default function App() {
       <Modal visible={composerOpen} animationType="slide">
         <SafeAreaView style={[styles.safe, { padding: 16 }]}>
           <Text style={styles.sectionTitle}>New story</Text>
-          <Image
-            source={{ uri: storyUri ?? `https://picsum.photos/seed/${storySeed}/540/960` }}
-            style={{ width: '100%', height: 320, borderRadius: 12, backgroundColor: '#111' }}
-            contentFit="cover"
-          />
-          <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+          <View style={{ width: '100%', height: 320, borderRadius: 12, overflow: 'hidden', backgroundColor: '#111' }}>
+            {storyUri && storyKind === 'video' ? (
+              <AutoVideo uri={storyUri} style={{ width: '100%', height: '100%' }} />
+            ) : (
+              <Image
+                source={{ uri: storyUri ?? `https://picsum.photos/seed/${storySeed}/540/960` }}
+                style={{ width: '100%', height: '100%' }}
+                contentFit="cover"
+              />
+            )}
+            {storyTone !== 'normal' ? (
+              <View
+                pointerEvents="none"
+                style={[StyleSheet.absoluteFill, { backgroundColor: toneOverlay(storyTone) }]}
+              />
+            ) : null}
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginHorizontal: -16, paddingHorizontal: 16, marginTop: 12 }}>
+            <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center', paddingRight: 8 }}>
+              {Object.entries(POST_TONES).map(([key, t]) => {
+                const on = storyTone === key;
+                return (
+                  <Pressable
+                    key={key}
+                    style={{ alignItems: 'center', gap: 4 }}
+                    accessibilityLabel={`${t.label} filter`}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: on }}
+                    onPress={() => {
+                      tap();
+                      setStoryTone(key);
+                    }}>
+                    <View
+                      style={[
+                        styles.toneSwatch,
+                        { backgroundColor: t.overlay === 'transparent' ? C.fill : t.overlay },
+                        on && { borderColor: '#0095F6', borderWidth: 2.5 },
+                      ]}
+                    />
+                    <Text style={[styles.muted, { fontSize: 11 }, on && { color: C.text, fontWeight: '700' }]}>
+                      {t.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </ScrollView>
+          <View style={{ flexDirection: 'row', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
             <Pressable
               style={styles.secondary}
               onPress={async () => {
                 const photo = await takePhoto();
                 if (photo) {
                   setStoryUri(photo.uri);
+                  setStoryKind('image');
                   setPhotoMsg('');
                 } else {
                   setPhotoMsg('Camera permission is needed. Allow it in Settings › Permissions.');
@@ -2955,12 +3474,41 @@ export default function App() {
                 const photo = await pickFromLibrary();
                 if (photo) {
                   setStoryUri(photo.uri);
+                  setStoryKind('image');
                   setPhotoMsg('');
                 } else {
                   setPhotoMsg('Photo access is needed. Allow it in Settings › Permissions.');
                 }
               }}>
-              <Text style={styles.secondaryTxt}>Choose from library</Text>
+              <Text style={styles.secondaryTxt}>Choose photo</Text>
+            </Pressable>
+            <Pressable
+              style={styles.secondary}
+              onPress={async () => {
+                const clip = await pickVideoFromLibrary();
+                if (clip) {
+                  setStoryUri(clip.uri);
+                  setStoryKind('video');
+                  setPhotoMsg('');
+                } else {
+                  setPhotoMsg('Photo access is needed. Allow it in Settings › Permissions.');
+                }
+              }}>
+              <Text style={styles.secondaryTxt}>Choose video</Text>
+            </Pressable>
+            <Pressable
+              style={styles.secondary}
+              onPress={async () => {
+                const uris = await pickManyFromLibrary();
+                if (uris.length > 0) {
+                  pushStoryMedia(uris.map((uri) => ({ uri, kind: 'image' as const, tone: storyTone === 'normal' ? undefined : storyTone })));
+                  setComposerOpen(false);
+                  setPhotoMsg('');
+                } else {
+                  setPhotoMsg('Photo access is needed. Allow it in Settings › Permissions.');
+                }
+              }}>
+              <Text style={styles.secondaryTxt}>Gallery (multi)</Text>
             </Pressable>
             <Pressable style={styles.secondary} onPress={() => setCameraOpen('story')}>
               <Text style={styles.secondaryTxt}>In-app camera</Text>
@@ -2975,7 +3523,13 @@ export default function App() {
             </View>
           ) : null}
           {storyUri ? (
-            <Pressable style={styles.miniFollow} onPress={() => setStoryUri(null)}>
+            <Pressable
+              style={styles.miniFollow}
+              onPress={() => {
+                setStoryUri(null);
+                setStoryKind('image');
+                setStoryTone('normal');
+              }}>
               <Text style={{ color: '#0095f6', fontWeight: '600' }}>Use a sample photo instead</Text>
             </Pressable>
           ) : null}
@@ -3232,91 +3786,263 @@ export default function App() {
 
       {/* Note viewer */}
       <Modal visible={noteModal !== null} animationType="fade" transparent>
-        <View style={styles.noteBackdrop}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={closeNote} accessibilityLabel="Close note" />
+        <View style={noteModal === ME ? styles.noteFullWrap : styles.noteBackdrop}>
+          {noteModal !== ME ? (
+            <Pressable style={StyleSheet.absoluteFill} onPress={closeNote} accessibilityLabel="Close note" />
+          ) : null}
           {noteModal ? (
-            <Animated.View
-              style={[
-                styles.noteCard,
-                {
-                  opacity: noteModalAnim,
-                  transform: [
-                    {
-                      scale: noteModalAnim.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1] }),
-                    },
-                    {
-                      translateY: noteModalAnim.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }),
-                    },
-                  ],
-                },
-              ]}>
-              <Avatar uri={userByName(users, noteModal).avatar} size={64} />
-              <Text style={styles.noteCardName}>{noteModal === ME ? 'Your note' : noteModal}</Text>
-              {noteModal === ME ? (
-                <>
+            noteModal === ME ? (
+              <Animated.View style={[styles.noteFull, { opacity: noteModalAnim }]}>
+                <Pressable
+                  hitSlop={8}
+                  accessibilityLabel="Close note composer"
+                  accessibilityRole="button"
+                  onPress={closeNote}
+                  style={{ alignSelf: 'flex-start' }}>
+                  <MaterialCommunityIcons name="close" size={30} color={C.text} />
+                </Pressable>
+                <View style={styles.notePill}>
                   <TextInput
                     value={noteDraft}
                     onChangeText={setNoteDraft}
-                    placeholder="Share a thought (60 chars)"
+                    placeholder="Note..."
                     placeholderTextColor={C.muted}
                     maxLength={60}
-                    style={[styles.input, { alignSelf: 'stretch', marginTop: 8 }]}
+                    autoFocus
+                    style={styles.notePillInput}
                     returnKeyType="done"
                     onSubmitEditing={saveNote}
                   />
-                  <Text style={[styles.muted, { alignSelf: 'flex-start', marginTop: 12, marginBottom: 4 }]}>
-                    Attach a song
-                  </Text>
-                  {SONGS.map((s) => {
-                    const label = `${s.title} · ${s.artist}`;
-                    const on = noteSongs[ME] === label;
-                    return (
-                      <Pressable
-                        key={label}
-                        style={[styles.songOption, on && { borderColor: '#0095F6', borderWidth: 1.5 }]}
-                        accessibilityLabel={`Attach ${label}`}
-                        accessibilityRole="button"
-                        onPress={() => {
-                          tap();
-                          setNoteSongs((prev) => ({ ...prev, [ME]: on ? '' : label }));
-                        }}>
-                        <MaterialCommunityIcons name="music" size={18} color={on ? '#0095F6' : C.muted} />
-                        <View style={{ flex: 1 }}>
-                          <Text style={{ color: C.text, fontWeight: '600' }}>{s.title}</Text>
-                          <Text style={styles.muted}>{s.artist}</Text>
-                        </View>
-                        {on ? <MaterialCommunityIcons name="check" size={20} color="#0095F6" /> : null}
-                      </Pressable>
-                    );
-                  })}
-                  <Pressable style={[styles.publish, { alignSelf: 'stretch' }]} onPress={saveNote}>
-                    <Text style={styles.publishTxt}>Share note</Text>
-                  </Pressable>
-                </>
-              ) : (
-                <>
-                  <Text style={styles.noteBig}>
-                    {notes[noteModal] ?? 'No note right now.'}
-                  </Text>
-                  {noteSongs[noteModal] ? (
-                    <View style={styles.noteSongRow}>
-                      <MaterialCommunityIcons name="music" size={18} color={C.text} />
-                      <Text style={{ color: C.text, fontWeight: '600' }}>{noteSongs[noteModal]}</Text>
-                    </View>
-                  ) : null}
+                </View>
+                <View style={{ alignItems: 'center', marginTop: 28 }}>
+                  <View>
+                    <Avatar uri={me.avatar} size={110} ring={false} />
+                    {noteSongs[ME] ? (
+                      <View style={styles.noteMusicBadge}>
+                        <MaterialCommunityIcons name="music" size={15} color="#fff" />
+                      </View>
+                    ) : null}
+                  </View>
+                </View>
+                <View style={styles.noteMediaRow}>
                   <Pressable
-                    style={[styles.publish, { alignSelf: 'stretch' }]}
+                    style={styles.noteMediaBtn}
+                    accessibilityLabel="Attach a song"
+                    accessibilityRole="button"
                     onPress={() => {
-                      const u = noteModal;
-                      closeNote();
-                      setActiveChat(u);
+                      tap();
+                      setAudioOpen(true);
                     }}>
-                    <Text style={styles.publishTxt}>Reply in chat</Text>
+                    <MaterialCommunityIcons name="music" size={22} color="#E1306C" />
                   </Pressable>
-                </>
-              )}
-            </Animated.View>
+                  <Pressable
+                    style={styles.noteMediaBtn}
+                    accessibilityLabel="Add location"
+                    accessibilityRole="button"
+                    onPress={() => {
+                      tap();
+                      flashNoteHint('Locations live on posts — notes stay text + song.');
+                    }}>
+                    <MaterialCommunityIcons name="map-marker-outline" size={22} color="#962FBF" />
+                  </Pressable>
+                  <Pressable
+                    style={styles.noteMediaBtn}
+                    accessibilityLabel="Add GIF"
+                    accessibilityRole="button"
+                    onPress={() => {
+                      tap();
+                      flashNoteHint('GIFs are not here yet — pick a song instead.');
+                    }}>
+                    <MaterialCommunityIcons name="sticker-emoji" size={22} color="#34C759" />
+                  </Pressable>
+                </View>
+                {noteSongs[ME] ? (
+                  <Text style={styles.noteSongBig} numberOfLines={1}>
+                    🎵 {noteSongs[ME]}
+                  </Text>
+                ) : null}
+                {noteHint ? <Text style={styles.noteHint}>{noteHint}</Text> : null}
+                <View style={{ flex: 1 }} />
+                <View style={styles.noteBottom}>
+                  <Pressable
+                    accessibilityLabel="Choose audience"
+                    accessibilityRole="button"
+                    onPress={() => {
+                      tap();
+                      flashNoteHint('Notes go to all your circles for now.');
+                    }}>
+                    <Text style={styles.noteAudience}>👥 Share with friends {'>'}</Text>
+                  </Pressable>
+                  <Pressable
+                    style={styles.noteShareBtn}
+                    accessibilityLabel="Share note"
+                    accessibilityRole="button"
+                    onPress={saveNote}>
+                    <Text style={styles.noteShareTxt}>Share</Text>
+                  </Pressable>
+                </View>
+              </Animated.View>
+            ) : (
+              <Animated.View
+                style={[
+                  styles.noteCard,
+                  {
+                    opacity: noteModalAnim,
+                    transform: [
+                      {
+                        scale: noteModalAnim.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1] }),
+                      },
+                      {
+                        translateY: noteModalAnim.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }),
+                      },
+                    ],
+                  },
+                ]}>
+                <Avatar uri={userByName(users, noteModal).avatar} size={64} />
+                <Text style={styles.noteCardName}>{noteModal}</Text>
+                <Text style={styles.noteBig}>
+                  {notes[noteModal] ?? 'No note right now.'}
+                </Text>
+                {noteSongs[noteModal] ? (
+                  <View style={styles.noteSongRow}>
+                    <MaterialCommunityIcons name="music" size={18} color={C.text} />
+                    <Text style={{ color: C.text, fontWeight: '600' }}>{noteSongs[noteModal]}</Text>
+                  </View>
+                ) : null}
+                <Pressable
+                  style={[styles.publish, { alignSelf: 'stretch' }]}
+                  onPress={() => {
+                    const u = noteModal;
+                    closeNote();
+                    setActiveChat(u);
+                  }}>
+                  <Text style={styles.publishTxt}>Reply in chat</Text>
+                </Pressable>
+              </Animated.View>
+            )
           ) : null}
+        </View>
+      </Modal>
+
+      {/* Audio browser */}
+      <Modal visible={audioOpen} animationType="slide" transparent>
+        <View style={styles.sheetWrap}>
+          <View style={[styles.sheet, { maxHeight: '82%' }]}>
+            <View style={styles.sheetHandle} />
+            <View style={[styles.searchField, { marginHorizontal: 16, marginBottom: 10 }]}>
+              <MaterialCommunityIcons name="magnify" size={18} color={C.muted} />
+              <TextInput
+                value={audioQuery}
+                onChangeText={setAudioQuery}
+                placeholder="Search..."
+                placeholderTextColor={C.muted}
+                style={styles.searchInput}
+                autoCapitalize="none"
+              />
+              {audioQuery ? (
+                <Pressable
+                  hitSlop={8}
+                  accessibilityLabel="Clear audio search"
+                  accessibilityRole="button"
+                  onPress={() => setAudioQuery('')}>
+                  <MaterialCommunityIcons name="close-circle" size={18} color={C.muted} />
+                </Pressable>
+              ) : null}
+            </View>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ paddingHorizontal: 16, gap: 8, paddingBottom: 8 }}>
+              {(
+                [
+                  { id: 'foryou', label: 'For you' },
+                  { id: 'trending', label: 'Trending' },
+                  { id: 'saved', label: 'Saved' },
+                ] as const
+              ).map((t) => {
+                const on = audioTab === t.id;
+                return (
+                  <Pressable
+                    key={t.id}
+                    style={[styles.audioChip, on && styles.audioChipOn]}
+                    accessibilityLabel={`${t.label} songs`}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: on }}
+                    onPress={() => setAudioTab(t.id)}>
+                    <Text style={[styles.audioChipTxt, on && styles.audioChipTxtOn]}>{t.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+            <FlatList
+              data={(() => {
+                const q = audioQuery.trim().toLowerCase();
+                let list = SONGS.map((s, i) => ({ ...s, hue: SONG_HUES[i % SONG_HUES.length] }));
+                if (audioTab === 'trending') list = [list[2], list[0], list[4], list[1], list[3], list[5], ...list.slice(6)];
+                if (audioTab === 'saved') {
+                  list = list.filter((s) => savedSongs.has(`${s.title} · ${s.artist}`));
+                }
+                if (q) list = list.filter((s) => `${s.title} ${s.artist}`.toLowerCase().includes(q));
+                return list;
+              })()}
+              keyExtractor={(s) => `${s.title}-${s.artist}`}
+              renderItem={({ item: s }) => {
+                const label = `${s.title} · ${s.artist}`;
+                const saved = savedSongs.has(label);
+                const attached = noteSongs[ME] === label;
+                return (
+                  <Pressable
+                    style={styles.songRow}
+                    accessibilityLabel={`Use ${label} in your note`}
+                    accessibilityRole="button"
+                    onPress={() => {
+                      tap();
+                      setNoteSongs((prev) => ({ ...prev, [ME]: label }));
+                      setAudioOpen(false);
+                    }}>
+                    <View style={[styles.songArt, { backgroundColor: `hsl(${s.hue}, 55%, 42%)` }]}>
+                      <MaterialCommunityIcons name="music" size={24} color="#fff" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.songTitle} numberOfLines={1}>
+                        {s.title}
+                        {attached ? ' ✓' : ''}
+                      </Text>
+                      <Text style={styles.muted} numberOfLines={1}>
+                        {s.artist} • {s.dur}
+                      </Text>
+                    </View>
+                    <Pressable
+                      hitSlop={8}
+                      accessibilityLabel={saved ? `Unsave ${s.title}` : `Save ${s.title}`}
+                      accessibilityRole="button"
+                      onPress={() => {
+                        tap();
+                        setSavedSongs((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(label)) next.delete(label);
+                          else next.add(label);
+                          return next;
+                        });
+                      }}>
+                      <MaterialCommunityIcons
+                        name={saved ? 'bookmark' : 'bookmark-outline'}
+                        size={26}
+                        color={saved ? C.text : C.muted}
+                      />
+                    </Pressable>
+                  </Pressable>
+                );
+              }}
+              ListEmptyComponent={
+                <View style={styles.center}>
+                  <Text style={styles.muted}>
+                    {audioTab === 'saved' ? 'No saved songs yet — tap bookmark on any track.' : 'No songs match.'}
+                  </Text>
+                </View>
+              }
+            />
+          </View>
         </View>
       </Modal>
 
@@ -3601,7 +4327,16 @@ export default function App() {
                 </Pressable>
                 <Text style={[styles.sectionTitle, { paddingHorizontal: 12, marginTop: 12 }]}>Phone contacts</Text>
                 {contactsBusy ? (
-                  <Text style={[styles.muted, { paddingHorizontal: 12 }]}>Loading contacts...</Text>
+                  <Shimmer>
+                    <View style={{ paddingHorizontal: 12, gap: 10, paddingVertical: 8 }}>
+                      {[0, 1, 2].map((i) => (
+                        <View key={i} style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
+                          <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#8e8e93' }} />
+                          <View style={{ flex: 1, height: 14, borderRadius: 7, backgroundColor: '#8e8e93' }} />
+                        </View>
+                      ))}
+                    </View>
+                  </Shimmer>
                 ) : deviceContacts ? (
                   deviceContacts.length === 0 ? (
                     <View style={{ paddingHorizontal: 12 }}>
@@ -3691,7 +4426,7 @@ const makeStyles = (C: Theme) =>
   storyItem: { alignItems: 'center', marginRight: 14, width: 78 },
   storyName: { fontSize: 11, color: C.text, marginTop: 4 },
   avatarRing: { padding: 2, borderColor: '#0095f6', backgroundColor: '#fff' },
-  post: { marginBottom: 0 },
+  post: { marginBottom: 8, backgroundColor: C.bg },
   postHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3702,33 +4437,64 @@ const makeStyles = (C: Theme) =>
   postUser: { fontWeight: '600', fontSize: 15, color: C.text, flex: 1 },
   postMeta: { color: C.muted, fontSize: 12, marginTop: 1 },
   postImage: { width: '100%', aspectRatio: 1, backgroundColor: C.fill },
+  shopDot: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shopDotInner: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#fff' },
+  shopCard: {
+    position: 'absolute',
+    top: 34,
+    left: -30,
+    backgroundColor: C.sheet,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: C.hairline,
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
+  },
+  shopLabel: { color: C.text, fontWeight: '700', fontSize: 13 },
+  shopPrice: { color: C.muted, fontSize: 12, marginTop: 2 },
   postActions: { flexDirection: 'row', gap: 20, paddingHorizontal: 14, paddingVertical: 10 },
   likes: { fontWeight: '700', fontSize: 15, color: C.text, paddingHorizontal: 14, paddingTop: 10 },
   caption: { color: C.text, paddingHorizontal: 14, marginTop: 4, lineHeight: 20, fontSize: 14 },
   meta: { color: C.muted, paddingHorizontal: 12, marginTop: 4, marginBottom: 12, fontSize: 12 },
   tabFloat: {
     position: 'absolute',
-    bottom: 24,
-    left: 20,
-    right: 20,
-    borderRadius: 28,
-    shadowColor: '#000',
-    shadowOpacity: 0.22,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 12,
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'transparent',
   },
   tabBar: {
     flexDirection: 'row',
     justifyContent: 'space-around',
     alignItems: 'center',
-    paddingVertical: 14,
-    borderRadius: 28,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    paddingBottom: 22,
     overflow: 'hidden',
     backgroundColor: C.tabBar,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: C.hairline,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: C.hairline,
   },
+  tabItem: {
+    paddingVertical: 7,
+    paddingHorizontal: 20,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tabItemOn: { backgroundColor: C.tabPill },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   muted: { color: C.muted },
   sectionTitle: { fontWeight: '700', color: C.text, fontSize: 16, marginBottom: 8 },
@@ -3774,6 +4540,15 @@ const makeStyles = (C: Theme) =>
   grid: { flexDirection: 'row', flexWrap: 'wrap' },
   cell: { width: '33.33%', aspectRatio: 1, padding: 0.5 },
   cellImg: { flex: 1, backgroundColor: C.fill, borderRadius: 1 },
+  viewBadge: { position: 'absolute', left: 6, bottom: 6, flexDirection: 'row', alignItems: 'center', gap: 4 },
+  viewTxt: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
+    textShadowColor: 'rgba(0,0,0,0.8)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
   composer: { flexDirection: 'row', gap: 8, padding: 12, alignItems: 'center' },
   input: {
     flex: 1,
@@ -3814,6 +4589,13 @@ const makeStyles = (C: Theme) =>
   profileTabOn: { color: C.text, borderBottomWidth: 2, borderBottomColor: C.text },
   seedRow: { flexDirection: 'row', gap: 8, marginTop: 12 },
   seed: { width: 52, height: 52, borderRadius: 8, backgroundColor: C.fill },
+  toneSwatch: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: C.hairline,
+  },
   publish: {
     backgroundColor: '#0095f6',
     borderRadius: 8,
@@ -3905,6 +4687,9 @@ const makeStyles = (C: Theme) =>
   },
   reelTitle: { color: '#fff', fontWeight: '700', fontSize: 22 },
   reelCounter: {
+    position: 'absolute',
+    top: 56,
+    right: 16,
     color: '#fff',
     fontSize: 12,
     fontWeight: '600',
@@ -3914,6 +4699,20 @@ const makeStyles = (C: Theme) =>
     paddingVertical: 4,
     overflow: 'hidden',
   },
+  reelFriends: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    borderRadius: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  reelFriendsOn: { borderColor: '#fff', backgroundColor: 'rgba(255,255,255,0.25)' },
+  reelFriendAvatar: { width: 22, height: 22, borderRadius: 11, borderWidth: 1.5, borderColor: '#fff' },
+  reelFriendsTxt: { color: '#fff', fontWeight: '600', fontSize: 14 },
   reelGlassBtn: {
     width: 48,
     height: 48,
@@ -3944,6 +4743,17 @@ const makeStyles = (C: Theme) =>
   },
   reelCap: { color: '#fff', marginTop: 8, fontSize: 14, lineHeight: 19 },
   reelAudio: { color: '#fff', fontSize: 12 },
+  reelVote: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(255,255,255,0.22)',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  reelVoteTxt: { color: '#fff', fontWeight: '600', fontSize: 14 },
+  reelMore: { position: 'absolute', right: 16, bottom: 230 },
   switch: {
     width: 51,
     height: 31,
@@ -3957,17 +4767,83 @@ const makeStyles = (C: Theme) =>
   knobOn: { alignSelf: 'flex-end' },
   langChip: { borderWidth: 1, borderColor: C.hairline, borderRadius: 16, paddingVertical: 6, paddingHorizontal: 12 },
   langChipOn: { backgroundColor: '#0095f6', borderColor: '#0095f6' },
-  noteCell: { width: 76, alignItems: 'center', marginRight: 10 },
+  noteCell: { width: 84, alignItems: 'center', marginRight: 10 },
   noteBubble: {
     backgroundColor: C.fill,
-    borderRadius: 12,
+    borderRadius: 14,
     paddingHorizontal: 10,
-    paddingVertical: 6,
-    marginBottom: 4,
-    maxWidth: 76,
-    minHeight: 30,
+    paddingVertical: 7,
+    marginBottom: -10,
+    maxWidth: 84,
+    minHeight: 32,
     justifyContent: 'center',
+    zIndex: 2,
+    elevation: 2,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: C.hairline,
   },
+  noteFullWrap: { flex: 1, backgroundColor: C.bg },
+  noteFull: { flex: 1, alignSelf: 'stretch', paddingHorizontal: 16, paddingTop: 12 },
+  notePill: {
+    alignSelf: 'center',
+    backgroundColor: C.fill,
+    borderRadius: 20,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    marginTop: 12,
+    minWidth: 130,
+  },
+  notePillInput: { color: C.text, fontSize: 16, textAlign: 'center', padding: 0 },
+  noteMusicBadge: {
+    position: 'absolute',
+    right: 0,
+    bottom: 4,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#E1306C',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: C.bg,
+  },
+  noteMediaRow: { flexDirection: 'row', gap: 12, justifyContent: 'center', marginTop: 20 },
+  noteMediaBtn: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: C.hairline,
+    borderRadius: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+  },
+  noteSongBig: { color: C.text, fontSize: 15, fontWeight: '600', textAlign: 'center', marginTop: 14 },
+  noteHint: { color: C.muted, fontSize: 13, textAlign: 'center', marginTop: 10 },
+  noteBottom: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 20,
+  },
+  noteAudience: { color: C.text, fontWeight: '600', fontSize: 15 },
+  noteShareBtn: { backgroundColor: '#3A3AB8', borderRadius: 22, paddingVertical: 12, paddingHorizontal: 28 },
+  noteShareTxt: { color: '#fff', fontWeight: '700', fontSize: 16 },
+  audioChip: {
+    backgroundColor: C.fill,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+  },
+  audioChipOn: { backgroundColor: '#fff' },
+  audioChipTxt: { color: C.text, fontWeight: '600', fontSize: 15 },
+  audioChipTxtOn: { color: '#000' },
+  songRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  songArt: { width: 52, height: 52, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  songTitle: { color: C.text, fontWeight: '700', fontSize: 16 },
   noteText: { fontSize: 12, color: C.text, textAlign: 'center' },
   noteSong: { fontSize: 10, color: C.muted, textAlign: 'center', marginTop: 2 },
   noteBackdrop: {
@@ -4003,16 +4879,6 @@ const makeStyles = (C: Theme) =>
     paddingHorizontal: 12,
     paddingVertical: 8,
     marginBottom: 8,
-  },
-  songOption: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    alignSelf: 'stretch',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginBottom: 4,
   },
   permDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: C.hairline },
   permDotOn: { backgroundColor: '#34c759' },
@@ -4057,6 +4923,16 @@ const makeStyles = (C: Theme) =>
   dmName: { fontWeight: '700', fontSize: 16, color: C.text },
   dmSnippet: { color: C.muted, fontSize: 14, marginTop: 2 },
   dmTime: { color: C.muted, fontSize: 12 },
+  dmTabs: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 4,
+  },
+  dmTab: { fontSize: 17, fontWeight: '700', color: C.muted },
+  dmTabOn: { color: C.text },
   composeBtn: {
     width: 44,
     height: 44,
@@ -4112,23 +4988,26 @@ const makeStyles = (C: Theme) =>
     paddingHorizontal: 16,
   },
   profileCardBtnTxt: { color: '#fff', fontWeight: '700', fontSize: 14 },
-  circleFab: {
+  feedSwitcher: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    backgroundColor: '#0095F6',
-    borderRadius: 20,
-    paddingVertical: 9,
-    paddingHorizontal: 18,
-    shadowColor: '#000',
-    shadowOpacity: 0.16,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
+    gap: 2,
+    flex: 1,
+    justifyContent: 'center',
   },
-  circleFabTxt: { color: '#fff', fontWeight: '700', fontSize: 15 },
-  circleMenu: {
-    marginTop: 8,
+  feedSwitcherTxt: { fontSize: 20, fontWeight: '800', color: C.text },
+  feedMenuWrap: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    zIndex: 30,
+    elevation: 30,
+  },
+  feedMenu: {
+    marginTop: 108,
     width: 250,
     backgroundColor: C.sheet,
     borderRadius: 16,
@@ -4137,10 +5016,10 @@ const makeStyles = (C: Theme) =>
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: C.hairline,
     shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 10,
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 16,
   },
   circleOption: {
     flexDirection: 'row',

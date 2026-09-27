@@ -73,6 +73,40 @@ export async function takePhoto(): Promise<DevicePhoto> {
   }
 }
 
+export type DeviceClip = { uri: string; kind: 'image' | 'video' } | null;
+
+export async function pickVideoFromLibrary(): Promise<DeviceClip> {
+  try {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) return null;
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['videos'],
+      allowsEditing: true,
+      quality: 0.8,
+    });
+    if (result.canceled || !result.assets[0]) return null;
+    return { uri: result.assets[0].uri, kind: 'video' };
+  } catch {
+    return null;
+  }
+}
+
+export async function pickManyFromLibrary(): Promise<string[]> {
+  try {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) return [];
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsMultipleSelection: true,
+      quality: 0.8,
+    });
+    if (result.canceled || !result.assets) return [];
+    return result.assets.map((a) => a.uri).filter(Boolean).slice(0, 10);
+  } catch {
+    return [];
+  }
+}
+
 export async function saveToLibrary(uri: string): Promise<boolean> {
   try {
     // Lazy + legacy: the classic 'ExpoMediaLibrary' native module ships in

@@ -121,6 +121,16 @@ async function main() {
   const cback = await pc.load();
   assert('circles round-trip', cback !== null && Array.isArray(cback.circles) && cback.activeCircleId === 'family');
 
+  console.log('media model:');
+  const social = loadTs('src/social.ts');
+  assert('tones map has 7 presets', Object.keys(social.POST_TONES).length === 7);
+  assert('unknown tone is transparent', social.toneOverlay('nope') === 'transparent');
+  assert('warm tone has overlay', social.toneOverlay('warm').startsWith('rgba'));
+  const legacy = [{ username: 'ana', images: ['s1', 's2'], seen: false }];
+  const norm = social.normalizeStories(legacy);
+  assert('legacy stories migrate to media', norm[0].media.length === 2 && norm[0].media[0].kind === 'image');
+  assert('storyMedia reads media first', social.storyMedia({ username: 'x', images: ['a'], seen: false, media: [{ uri: 'v', kind: 'video' }] })[0].kind === 'video');
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }

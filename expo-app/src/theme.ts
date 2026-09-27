@@ -16,6 +16,7 @@ export type Theme = {
   green: string;
   link: string;
   tabBar: string;
+  tabPill: string;
   scrim: string;
 };
 
@@ -31,7 +32,8 @@ export const LightTheme: Theme = {
   like: '#FF3040',
   green: '#34C759',
   link: '#00376B',
-  tabBar: 'rgba(255,255,255,0.82)',
+  tabBar: 'rgba(255,255,255,0.92)',
+  tabPill: '#E4E4E6',
   scrim: 'rgba(0,0,0,0.45)',
 };
 
@@ -47,7 +49,8 @@ export const DarkTheme: Theme = {
   like: '#FF3040',
   green: '#34C759',
   link: '#E0F1FF',
-  tabBar: 'rgba(28,28,30,0.82)',
+  tabBar: 'rgba(10,10,12,0.94)',
+  tabPill: '#2C2C2E',
   scrim: 'rgba(0,0,0,0.55)',
 };
 
